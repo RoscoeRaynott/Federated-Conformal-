@@ -385,13 +385,14 @@ def run_manual_simulated_distributed_kmeans(data_centers_list, gene_names_list, 
 
 
 # --- Main Analysis Button ---
+# --- Main Analysis Button ---
 if st.button("🚀 Run Simulated Distributed Conformal Clustering", key="run_analysis_btn"):
     if not st.session_state.data_generated or not st.session_state.data_centers:
         st.error("Please generate data first using the sidebar button.")
         st.stop()
 
-    global_centroids = None
     st.session_state.analysis_run_complete = False
+    st.session_state.centralized_analysis_complete = False
 
     if st.session_state.gene_names:
         with st.spinner(f"Running {num_simulation_rounds_input} rounds of simulated distributed K-Means..."):
@@ -410,115 +411,153 @@ if st.button("🚀 Run Simulated Distributed Conformal Clustering", key="run_ana
         combined_data_df = pd.concat(st.session_state.data_centers, ignore_index=True)
         X_full = combined_data_df[st.session_state.gene_names].values
         
-        final_labels, final_distances_to_centroids = pairwise_distances_argmin_min(X_full, global_centroids)
-        combined_data_df["Cluster"] = final_labels
+        # Federated Conformal Clustering
+        final_labels_fed, final_distances_to_centroids = pairwise_distances_argmin_min(X_full, global_centroids)
+        combined_data_df["Cluster_Federated"] = final_labels_fed
         conformal_scores = final_distances_to_centroids
-        combined_data_df["ConformalScore"] = conformal_scores
-        
+        combined_data_df["ConformalScore_Federated"] = conformal_scores
         conformal_threshold = np.quantile(conformal_scores, conf_level_input)
-        combined_data_df["HighConfidence"] = combined_data_df["ConformalScore"] <= conformal_threshold
+        combined_data_df["HighConfidence_Federated"] = combined_data_df["ConformalScore_Federated"] <= conformal_threshold
 
+        # Fully Centralized Clustering
+        kmeans_centralized = KMeans(n_clusters=n_clusters_input, random_state=42, n_init='auto').fit(X_full)
+        centralized_labels = kmeans_centralized.labels_
+        combined_data_df["Cluster_Centralized"] = centralized_labels
+
+        # Store results in session state
         st.session_state.combined_data_df_clustered = combined_data_df
-        st.session_state.final_labels_for_plot = final_labels
-        st.session_state.X_full_for_plot = X_full
+        st.session_state.X_full = X_full
         st.session_state.analysis_run_complete = True
-        
-        # For metric calculation (Inertia), since we don't have a single KMeans model object
-        # that produced these federated centroids, we calculate inertia manually.
-        # Other metrics use X_full and final_labels.
-        # Clear any previous centralized model to avoid confusion for inertia calc.
-        if 'kmeans_model_for_metrics' in st.session_state:
-            del st.session_state['kmeans_model_for_metrics']
+        st.session_state.centralized_analysis_complete = True
     else:
         st.error("Simulated distributed centroids could not be determined. Cannot proceed.")
         st.session_state.analysis_run_complete = False
+        st.session_state.centralized_analysis_complete = False
 
-    # --- Optional: Comparison with fully centralized K-Means ---
-    if st.session_state.analysis_run_complete and st.checkbox("Compare with Fully Centralized K-Means Results", key="compare_centralized_cb"):
-        st.write("--- Running Fully Centralized K-Means for Comparison ---")
-        X_full_comp = st.session_state.X_full_for_plot # Use the already prepared full data
-
-        kmeans_centralized = KMeans(n_clusters=n_clusters_input, random_state=42, n_init='auto').fit(X_full_comp)
-        centralized_centroids_comp = kmeans_centralized.cluster_centers_
-        centralized_labels_comp = kmeans_centralized.labels_
-        
-        st.write("**Simulated Distributed Centroids (first 2 genes):**")
-        st.dataframe(pd.DataFrame(global_centroids[:, :2], columns=st.session_state.gene_names[:2]))
-        st.write("**Fully Centralized Centroids (first 2 genes):**")
-        st.dataframe(pd.DataFrame(centralized_centroids_comp[:, :2], columns=st.session_state.gene_names[:2]))
-
-        if len(np.unique(st.session_state.final_labels_for_plot)) > 1:
-            st.write(f"Silhouette Score (Simulated Distributed Labels): {metrics.silhouette_score(X_full_comp, st.session_state.final_labels_for_plot):.3f}")
-        if len(np.unique(centralized_labels_comp)) > 1:
-            st.write(f"Silhouette Score (Centralized Labels): {metrics.silhouette_score(X_full_comp, centralized_labels_comp):.3f}")
-        st.write(f"Inertia (Centralized): {kmeans_centralized.inertia_:.2f}")
-        st.write(f"Inertia (Simulated Distributed - sum of squared distances): {np.sum(st.session_state.combined_data_df_clustered['ConformalScore']**2):.2f}")
-
-
-# --- Display results if analysis is complete ---
-if st.session_state.get('analysis_run_complete', False):
-    combined_data_df_to_use = st.session_state.combined_data_df_clustered
-    final_labels_to_use = st.session_state.final_labels_for_plot
-    X_full_to_use = st.session_state.X_full_for_plot
+# --- Display Results Side by Side ---
+if st.session_state.get('analysis_run_complete', False) and st.session_state.get('centralized_analysis_complete', False):
+    combined_data_df = st.session_state.combined_data_df_clustered
+    X_full = st.session_state.X_full
     gene_names_to_use = st.session_state.gene_names
 
-    st.subheader("Global Clustering Results (Simulated Distributed)")
-    current_conformal_threshold = np.quantile(combined_data_df_to_use['ConformalScore'], conf_level_input)
-    st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {current_conformal_threshold:.3f}")
-    st.write(f"Number of high-confidence samples: {combined_data_df_to_use['HighConfidence'].sum()}")
-    st.write(f"Number of ambiguous/low-confidence samples: {(~combined_data_df_to_use['HighConfidence']).sum()}")
+    st.subheader("Clustering Results Comparison")
+    col1, col2 = st.columns(2)
 
-    st.subheader(f"Clustering Quality: {metric_choice_input}")
+    # Federated Conformal Clustering Results
+    with col1:
+        st.subheader("Federated Conformal Clustering")
+        
+        # Cluster Sizes
+        cluster_counts_fed = combined_data_df["Cluster_Federated"].value_counts().sort_index()
+        st.write("**Cluster Sizes:**")
+        st.write(cluster_counts_fed)
+        
+        # Silhouette Score
+        if len(np.unique(combined_data_df["Cluster_Federated"])) > 1:
+            sil_score_fed = metrics.silhouette_score(X_full, combined_data_df["Cluster_Federated"])
+            st.write(f"**Silhouette Score:** {sil_score_fed:.3f}")
+        else:
+            st.write("**Silhouette Score:** N/A (single cluster)")
+        
+        # Conformal Metrics
+        conformal_threshold = np.quantile(combined_data_df["ConformalScore_Federated"], conf_level_input)
+        st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {conformal_threshold:.3f}")
+        st.write(f"**High-Confidence Samples:** {combined_data_df['HighConfidence_Federated'].sum()}")
+        st.write(f"**Ambiguous/Low-Confidence Samples:** {(~combined_data_df['HighConfidence_Federated']).sum()}")
+        
+        # PCA Plot
+        try:
+            pca_model = PCA(n_components=2)
+            projected_data = pca_model.fit_transform(X_full)
+            plot_df_pca_fed = pd.DataFrame({
+                "PC1": projected_data[:, 0],
+                "PC2": projected_data[:, 1],
+                "Cluster": combined_data_df["Cluster_Federated"].astype(str),
+                "HighConfidence": combined_data_df["HighConfidence_Federated"]
+            })
+            chart_fed = (
+                alt.Chart(plot_df_pca_fed)
+                .mark_circle(size=60)
+                .encode(
+                    x=alt.X("PC1", title="Principal Component 1"),
+                    y=alt.Y("PC2", title="Principal Component 2"),
+                    color=alt.Color("Cluster:N", title="Cluster"),
+                    opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
+                    tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
+                )
+                .properties(title="PCA of Federated Clustered Data", width=350, height=300)
+                .interactive()
+            )
+            st.altair_chart(chart_fed, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error during PCA and plotting for federated: {e}")
+
+    # Fully Centralized Clustering Results
+    with col2:
+        st.subheader("Fully Centralized Clustering")
+        
+        # Cluster Sizes
+        cluster_counts_cen = combined_data_df["Cluster_Centralized"].value_counts().sort_index()
+        st.write("**Cluster Sizes:**")
+        st.write(cluster_counts_cen)
+        
+        # Silhouette Score
+        if len(np.unique(combined_data_df["Cluster_Centralized"])) > 1:
+            sil_score_cen = metrics.silhouette_score(X_full, combined_data_df["Cluster_Centralized"])
+            st.write(f"**Silhouette Score:** {sil_score_cen:.3f}")
+        else:
+            st.write("**Silhouette Score:** N/A (single cluster)")
+        
+        # PCA Plot
+        try:
+            pca_model = PCA(n_components=2)
+            projected_data = pca_model.fit_transform(X_full)
+            plot_df_pca_cen = pd.DataFrame({
+                "PC1": projected_data[:, 0],
+                "PC2": projected_data[:, 1],
+                "Cluster": combined_data_df["Cluster_Centralized"].astype(str),
+            })
+            chart_cen = (
+                alt.Chart(plot_df_pca_cen)
+                .mark_circle(size=60)
+                .encode(
+                    x=alt.X("PC1", title="Principal Component 1"),
+                    y=alt.Y("PC2", title="Principal Component 2"),
+                    color=alt.Color("Cluster:N", title="Cluster"),
+                    tooltip=["PC1", "PC2", "Cluster"]
+                )
+                .properties(title="PCA of Centralized Clustered Data", width=350, height=300)
+                .interactive()
+            )
+            st.altair_chart(chart_cen, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error during PCA and plotting for centralized: {e}")
+
+    # --- Additional Visualizations and Annotations for Federated Clustering ---
+    st.subheader(f"Clustering Quality: {metric_choice_input} (Federated)")
     metric_value_display = "N/A"
     try:
         if metric_choice_input == "Inertia":
-             # Inertia is sum of squared distances of samples to their closest cluster center.
-            metric_value_display = np.sum(combined_data_df_to_use["ConformalScore"]**2)
-        elif len(np.unique(final_labels_to_use)) > 1:
+            metric_value_display = np.sum(combined_data_df["ConformalScore_Federated"]**2)
+        elif len(np.unique(combined_data_df["Cluster_Federated"])) > 1:
             if metric_choice_input == "Silhouette Score":
-                metric_value_display = metrics.silhouette_score(X_full_to_use, final_labels_to_use)
+                metric_value_display = metrics.silhouette_score(X_full, combined_data_df["Cluster_Federated"])
             elif metric_choice_input == "Calinski-Harabasz Index":
-                metric_value_display = metrics.calinski_harabasz_score(X_full_to_use, final_labels_to_use)
+                metric_value_display = metrics.calinski_harabasz_score(X_full, combined_data_df["Cluster_Federated"])
             elif metric_choice_input == "Davies-Bouldin Index":
-                metric_value_display = metrics.davies_bouldin_score(X_full_to_use, final_labels_to_use)
+                metric_value_display = metrics.davies_bouldin_score(X_full, combined_data_df["Cluster_Federated"])
         else:
             metric_value_display = "N/A (requires >1 cluster for this metric)"
         st.write(f"**{metric_choice_input}:** {metric_value_display:.2f}" if isinstance(metric_value_display, (int, float)) else metric_value_display)
     except Exception as e:
         st.error(f"Error calculating metric '{metric_choice_input}': {e}")
 
-    # Default PCA Plot (Altair)
-    st.subheader("PCA Projection of Clustered Data (Altair)")
-    try:
-        pca_model = PCA(n_components=2)
-        projected_data = pca_model.fit_transform(X_full_to_use)
-        plot_df_pca = pd.DataFrame({
-            "PC1": projected_data[:, 0],
-            "PC2": projected_data[:, 1],
-            "Cluster": final_labels_to_use.astype(str),
-            "HighConfidence": combined_data_df_to_use["HighConfidence"]
-        })
-        chart = (
-            alt.Chart(plot_df_pca)
-            .mark_circle(size=60)
-            .encode(
-                x=alt.X("PC1", title="Principal Component 1"),
-                y=alt.Y("PC2", title="Principal Component 2"),
-                color=alt.Color("Cluster:N", title="Cluster"),
-                opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
-                tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
-            )
-            .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
-            .interactive()
-        )
-        st.altair_chart(chart, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error during PCA and plotting: {e}")
+    # Default PCA Plot (already shown above, skipped here to avoid redundancy)
 
-    # --- Additional Visualizations ---
+    # Additional Visualizations (Federated Only)
     if additional_viz_choice == "Mean Cluster Curves":
-        st.subheader("Mean Curves per Cluster")
-        unique_clusters = sorted(combined_data_df_to_use['Cluster'].unique())
+        st.subheader("Mean Curves per Cluster (Federated)")
+        unique_clusters = sorted(combined_data_df['Cluster_Federated'].unique())
         n_cols_mc = 2
         n_rows_mc = (len(unique_clusters) + n_cols_mc - 1) // n_cols_mc
         fig_mean_curves, axs_mc = plt.subplots(n_rows_mc, n_cols_mc, figsize=(n_cols_mc * 6, n_rows_mc * 4), squeeze=False)
@@ -526,7 +565,7 @@ if st.session_state.get('analysis_run_complete', False):
         for idx, cluster_id in enumerate(unique_clusters):
             if idx < len(axs_mc_flat):
                 ax = axs_mc_flat[idx]
-                cluster_data_mc = combined_data_df_to_use[combined_data_df_to_use['Cluster'] == cluster_id][gene_names_to_use]
+                cluster_data_mc = combined_data_df[combined_data_df['Cluster_Federated'] == cluster_id][gene_names_to_use]
                 if not cluster_data_mc.empty:
                     mean_curve = cluster_data_mc.mean(axis=0)
                     ax.plot(gene_names_to_use, mean_curve, color=f'C{int(cluster_id) % 10}', linewidth=2, label=f"Mean Cluster {cluster_id}")
@@ -542,7 +581,7 @@ if st.session_state.get('analysis_run_complete', False):
         st.pyplot(fig_mean_curves)
 
     elif additional_viz_choice == "Parallel Coordinates":
-        st.subheader("Parallel Coordinates Plot of Clusters")
+        st.subheader("Parallel Coordinates Plot of Clusters (Federated)")
         if not gene_names_to_use:
             st.warning("No gene names available for parallel coordinates plot.")
         else:
@@ -550,20 +589,20 @@ if st.session_state.get('analysis_run_complete', False):
             genes_for_plot_parallel = gene_names_to_use[:num_genes_for_parallel]
             if not genes_for_plot_parallel:
                 st.warning("No genes selected or available for parallel coordinates plot.")
-            elif not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
+            elif not combined_data_df.empty and 'Cluster_Federated' in combined_data_df:
                 try:
-                    df_for_parallel = combined_data_df_to_use.copy()
-                    unique_cluster_labels_str = sorted(df_for_parallel['Cluster'].astype(str).unique())
-                    label_to_numeric_map = {label_str_val: i for i, label_str_val in enumerate(unique_cluster_labels_str)} # Renamed inner var
-                    df_for_parallel['ClusterNumeric'] = df_for_parallel['Cluster'].astype(str).map(label_to_numeric_map)
+                    df_for_parallel = combined_data_df.copy()
+                    unique_cluster_labels_str = sorted(df_for_parallel['Cluster_Federated'].astype(str).unique())
+                    label_to_numeric_map = {label_str_val: i for i, label_str_val in enumerate(unique_cluster_labels_str)}
+                    df_for_parallel['ClusterNumeric'] = df_for_parallel['Cluster_Federated'].astype(str).map(label_to_numeric_map)
                     
                     temp_genes_for_plot_parallel = list(genes_for_plot_parallel)
-                    for gene_iter in temp_genes_for_plot_parallel[:]: # Iterate over a copy for safe removal
+                    for gene_iter in temp_genes_for_plot_parallel[:]:
                         if gene_iter in df_for_parallel.columns:
                             df_for_parallel[gene_iter] = pd.to_numeric(df_for_parallel[gene_iter], errors='coerce')
                         else:
                             st.warning(f"Gene column '{gene_iter}' not found in DataFrame for parallel plot. Removing from dimensions.")
-                            if gene_iter in genes_for_plot_parallel: genes_for_plot_parallel.remove(gene_iter) # Remove from original list for next step
+                            if gene_iter in genes_for_plot_parallel: genes_for_plot_parallel.remove(gene_iter)
                     
                     final_genes_for_plot = [g for g in genes_for_plot_parallel if g in df_for_parallel.columns]
                     if final_genes_for_plot:
@@ -578,7 +617,7 @@ if st.session_state.get('analysis_run_complete', False):
                         else:
                             fig_parallel = px.parallel_coordinates(
                                 df_for_parallel, color="ClusterNumeric", dimensions=numeric_genes,
-                                title="Parallel Coordinates Plot by Cluster"
+                                title="Parallel Coordinates Plot by Cluster (Federated)"
                             )
                             st.plotly_chart(fig_parallel, use_container_width=True)
                 except Exception as e:
@@ -587,47 +626,45 @@ if st.session_state.get('analysis_run_complete', False):
                 st.warning("No data available for parallel coordinates plot.")
 
     elif additional_viz_choice == "Heatmap of Mean Profiles":
-        st.subheader("Heatmap of Mean Cluster Profiles")
-        if not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use and gene_names_to_use:
-            mean_profiles = combined_data_df_to_use.groupby('Cluster')[gene_names_to_use].mean()
+        st.subheader("Heatmap of Mean Cluster Profiles (Federated)")
+        if not combined_data_df.empty and 'Cluster_Federated' in combined_data_df and gene_names_to_use:
+            mean_profiles = combined_data_df.groupby('Cluster_Federated')[gene_names_to_use].mean()
             if not mean_profiles.empty:
                 fig_heatmap_mean, ax_heatmap_mean = plt.subplots(figsize=(10, max(4, len(mean_profiles) * 0.5)))
                 sns.heatmap(mean_profiles, annot=True, fmt=".2f", cmap="viridis", ax=ax_heatmap_mean, cbar=True)
                 ax_heatmap_mean.set_xlabel("Genes / Features")
                 ax_heatmap_mean.set_ylabel("Cluster ID")
-                ax_heatmap_mean.set_title("Mean Gene Expression Profiles per Cluster")
+                ax_heatmap_mean.set_title("Mean Gene Expression Profiles per Cluster (Federated)")
                 plt.xticks(rotation=45, ha='right')
                 st.pyplot(fig_heatmap_mean)
             else: st.info("No mean profiles to display.")
         else: st.info("Clustered data or gene names not available.")
 
     elif additional_viz_choice == "3D PCA Scatter":
-        st.subheader("3D PCA Projection of Clustered Data")
-        if X_full_to_use.shape[1] >= 3:
+        st.subheader("3D PCA Projection of Clustered Data (Federated)")
+        if X_full.shape[1] >= 3:
             try:
                 pca_3d = PCA(n_components=3)
-                projected_3d = pca_3d.fit_transform(X_full_to_use)
+                projected_3d = pca_3d.fit_transform(X_full)
                 df_3d_pca = pd.DataFrame({
                     "PC1": projected_3d[:, 0], 
                     "PC2": projected_3d[:, 1], 
                     "PC3": projected_3d[:, 2],
-                    "Cluster": final_labels_to_use.astype(str),
-                    "HighConfidence": combined_data_df_to_use["HighConfidence"]
+                    "Cluster": combined_data_df["Cluster_Federated"].astype(str),
+                    "HighConfidence": combined_data_df["HighConfidence_Federated"]
                 })
                 
-                # Create separate dataframes for high and low confidence points
                 df_high_conf = df_3d_pca[df_3d_pca['HighConfidence'] == True]
                 df_low_conf = df_3d_pca[df_3d_pca['HighConfidence'] == False]
                 
                 fig_3d = px.scatter_3d(
                     df_high_conf, x='PC1', y='PC2', z='PC3', color='Cluster',
-                    title="3D PCA of Clustered Data", 
+                    title="3D PCA of Federated Clustered Data", 
                     labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
                     hover_data=["Cluster", "HighConfidence"]
                 )
                 fig_3d.update_traces(marker=dict(size=5, opacity=0.9), name="High Confidence")
                 
-                # Add low confidence points with lower opacity
                 if not df_low_conf.empty:
                     fig_low_conf = px.scatter_3d(
                         df_low_conf, x='PC1', y='PC2', z='PC3', color='Cluster',
@@ -645,23 +682,23 @@ if st.session_state.get('analysis_run_complete', False):
             st.warning("Need at least 3 features/genes for 3D PCA.")
             
     elif additional_viz_choice == "Gene BoxPlots":
-        st.subheader("Gene Expression Distribution by Cluster (Box Plots)")
+        st.subheader("Gene Expression Distribution by Cluster (Federated Box Plots)")
         if gene_names_to_use:
             num_genes_to_boxplot = min(5, len(gene_names_to_use))
             selected_genes_for_boxplot = st.multiselect(
                 "Select genes for box plot:", options=gene_names_to_use,
                 default=gene_names_to_use[:num_genes_to_boxplot], key="boxplot_genes_select"
             )
-            if selected_genes_for_boxplot and not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
+            if selected_genes_for_boxplot and not combined_data_df.empty and 'Cluster_Federated' in combined_data_df:
                 n_cols_bp = 2
                 n_rows_bp = (len(selected_genes_for_boxplot) + n_cols_bp - 1) // n_cols_bp
                 fig_boxplots, axs_bp = plt.subplots(n_rows_bp, n_cols_bp, figsize=(n_cols_bp * 7, n_rows_bp * 5), squeeze=False)
                 axs_bp_flat = axs_bp.flatten()
-                for idx, gene_name_bp in enumerate(selected_genes_for_boxplot): # Renamed inner var
+                for idx, gene_name_bp in enumerate(selected_genes_for_boxplot):
                     if idx < len(axs_bp_flat):
                         ax = axs_bp_flat[idx]
-                        sns.boxplot(x='Cluster', y=gene_name_bp, data=combined_data_df_to_use, ax=ax, palette="Set2")
-                        sns.stripplot(x='Cluster', y=gene_name_bp, data=combined_data_df_to_use, ax=ax, color=".25", alpha=0.5, dodge=True)
+                        sns.boxplot(x='Cluster_Federated', y=gene_name_bp, data=combined_data_df, ax=ax, palette="Set2")
+                        sns.stripplot(x='Cluster_Federated', y=gene_name_bp, data=combined_data_df, ax=ax, color=".25", alpha=0.5, dodge=True)
                         ax.set_title(f"Expression of {gene_name_bp}")
                 for i_ax_bp in range(len(selected_genes_for_boxplot), len(axs_bp_flat)): fig_boxplots.delaxes(axs_bp_flat[i_ax_bp])
                 plt.tight_layout()
@@ -670,22 +707,18 @@ if st.session_state.get('analysis_run_complete', False):
             st.warning("Gene names not available for box plots.")
 
     elif additional_viz_choice == "PCA Scatter (Streamlit Native)":
-        st.subheader("PCA Projection of Clustered Data (Streamlit Native)")
-        if 'X_full_for_plot' in st.session_state and 'final_labels_for_plot' in st.session_state:
-            X_full_viz = st.session_state.X_full_for_plot
-            final_labels_viz = st.session_state.final_labels_for_plot
-            try:
-                pca_model_st = PCA(n_components=2)
-                projected_data_st = pca_model_st.fit_transform(X_full_viz)
-                df_pca_st = pd.DataFrame({
-                    "PC1": projected_data_st[:, 0],
-                    "PC2": projected_data_st[:, 1],
-                    "Cluster": final_labels_viz.astype(str)
-                })
-                st.scatter_chart(df_pca_st, x="PC1", y="PC2", color="Cluster")
-            except Exception as e:
-                st.error(f"Error generating Streamlit native PCA scatter plot: {e}")
-        else:
-            st.warning("Clustering results needed for Streamlit native PCA scatter plot are not available.")
+        st.subheader("PCA Projection of Federated Clustered Data (Streamlit Native)")
+        try:
+            pca_model_st = PCA(n_components=2)
+            projected_data_st = pca_model_st.fit_transform(X_full)
+            df_pca_st = pd.DataFrame({
+                "PC1": projected_data_st[:, 0],
+                "PC2": projected_data_st[:, 1],
+                "Cluster": combined_data_df["Cluster_Federated"].astype(str)
+            })
+            st.scatter_chart(df_pca_st, x="PC1", y="PC2", color="Cluster")
+        except Exception as e:
+            st.error(f"Error generating Streamlit native PCA scatter plot: {e}")
 
-    render_cluster_annotations(combined_data_df_to_use, gene_names_to_use, n_clusters_input)
+    # Render cluster annotations for federated clustering
+    render_cluster_annotations(combined_data_df.rename(columns={"Cluster_Federated": "Cluster"}), gene_names_to_use, n_clusters_input)
