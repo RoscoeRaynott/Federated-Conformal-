@@ -104,7 +104,10 @@ st.scatter_chart(pd.DataFrame({"PC1": proj[:, 0], "PC2": proj[:, 1], "Cluster": 
 # Cluster annotations
 st.subheader("Cluster Annotations (via OpenRouter)")
 for i in range(n_clusters):
-    top_genes = full_data[full_data["Cluster"] == i].mean().sort_values(ascending=False).head(5).index.tolist()
+    cluster_data = full_data[full_data["Cluster"] == i]
+    numeric_cols = cluster_data.select_dtypes(include=np.number).columns
+    means = cluster_data[numeric_cols].mean()
+    top_genes = means.sort_values(ascending=False).head(5).index.tolist()
     if st.button(f"Annotate Cluster {i}"):
         summary = annotate_cluster(top_genes)
         st.markdown(f"**Cluster {i} Annotation:** {summary}")
