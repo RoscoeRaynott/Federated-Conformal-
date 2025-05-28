@@ -688,4 +688,4 @@ if st.session_state.get('analysis_run_complete', False):
         else:
             st.warning("Clustering results needed for Streamlit native PCA scatter plot are not available.")
 
-     render_cluster_annotations(combined_data_df_to_use, gene_names_to_use, n_clusters_input)
+render_cluster_annotations(combined_data_df_to_use, gene_names_to_use, n_clusters_input)
