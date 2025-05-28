@@ -60,7 +60,8 @@ def compute_conformal_scores(X, centroids):
 # OpenRouter Free Model
 # -----------------------
 def annotate_cluster(gene_list):
-    headers = {"Authorization": "Bearer YOUR_FREE_OPENROUTER_API_KEY"}
+    api_key = st.secrets["OPENROUTER_API_KEY"]
+    headers = {"Authorization": f"Bearer {api_key}"}
     prompt = f"Summarize this gene list into a biological theme: {gene_list}"
     data = {
         "model": "mistral/mistral-7b-instruct",
