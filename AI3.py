@@ -10,6 +10,7 @@ from sklearn.metrics import pairwise_distances_argmin_min
 from sklearn.decomposition import PCA
 import requests
 import altair as alt
+from sklearn import metrics
 
 # -----------------------
 # Simulate Federated Data
@@ -35,23 +36,45 @@ def simulate_federated_data(n_centers=3, n_samples=100, n_features=50):
     return data_centers, genes
 
 # -----------------------
-# Federated Server Logic
+# Flower Client Definition
 # -----------------------
+class ClusterClient(fl.client.NumPyClient):
+    def __init__(self, data: np.ndarray, n_clusters: int):
+        self.data = data
+        self.n_clusters = n_clusters
+
+    def get_parameters(self):
+        return []
+
+    def fit(self, parameters, config):
+        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42)
+        kmeans.fit(self.data)
+        return [kmeans.cluster_centers_], len(self.data), {}
+
+    def evaluate(self, parameters, config):
+        return 0.0, len(self.data), {}
+
+
 def start_flower_server():
     strategy = fl.server.strategy.FedAvg()
     fl.server.start_server("0.0.0.0:8080", config=fl.server.ServerConfig(num_rounds=1), strategy=strategy)
+
+
+def start_flower_client(data: np.ndarray, n_clusters: int):
+    client = ClusterClient(data, n_clusters)
+    fl.client.start_numpy_client(server_address="0.0.0.0:8080", client=client)
 
 # -----------------------
 # Conformal + Clustering
 # -----------------------
 def run_kmeans(data, n_clusters):
     kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(data)
-    return kmeans.cluster_centers_, kmeans.predict(data)
+    return kmeans, kmeans.cluster_centers_, kmeans.predict(data)
 
 
 def compute_conformal_scores(X, centroids):
-    closest, distances = pairwise_distances_argmin_min(X, centroids)
-    return distances, closest
+    _, distances = pairwise_distances_argmin_min(X, centroids)
+    return distances
 
 # -----------------------
 # OpenRouter Free Model
@@ -60,15 +83,13 @@ def annotate_cluster(gene_list):
     api_key = st.secrets["OPENROUTER_API_KEY"]
     headers = {"Authorization": f"Bearer {api_key}"}
     prompt = f"Summarize this gene list into a biological theme: {gene_list}"
-    data = {
-        "model": "mistralai/Mistral-7B-Instruct-v0.2",
-        "messages": [{"role": "user", "content": prompt}]
-    }
+    data = {"model": "mistralai/Mistral-7B-Instruct-v0.2", "messages": [{"role": "user", "content": prompt}], "max_tokens": 200}
     response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]["content"]
-    return "Annotation unavailable."
-
+    else:
+        st.error(f"OpenRouter API error {response.status_code}: {response.text}")
+        return "Annotation unavailable."
 
 # -----------------------
 # Streamlit UI
@@ -78,54 +99,130 @@ st.title("Federated Conformal Clustering for Biomarker Discovery")
 # Sidebar options
 n_centers = st.sidebar.slider("Number of Centers", 2, 5, 3)
 n_clusters = st.sidebar.slider("Number of Clusters", 2, 5, 3)
-plot_type = st.sidebar.radio("Plot Type", ["Connected Scatter (default Streamlit)", "Pure Scatter (Altair)"])
+plot_type = st.sidebar.radio("Plot Type", ["Connected Scatter", "Pure Scatter"])
+metric_choice = st.sidebar.selectbox("Quality Metric", [
+    "Inertia", "Silhouette Score", "Calinski-Harabasz Index", "Davies-Bouldin Index"
+])
 
-# Start federated server in background thread (for demo)
-threading.Thread(target=start_flower_server, daemon=True).start()
-time.sleep(2)
+# -----------------------
+# Streamlit UI: Settings
+# -----------------------
 
-# Simulate data and cluster
+# Federated Learning rounds selector
+num_rounds = st.sidebar.slider("Federated Rounds", 1, 10, 1)
+
+# Conformal confidence level
+conf_level = st.sidebar.slider("Conformal Confidence", 0.50, 0.99, 0.90, step=0.01)
+
+# Flower setup with dynamic rounds and strategy to capture centroids
+class SaveCentroidsStrategy(fl.server.strategy.FedAvg):
+    def __init__(self):
+        super().__init__()
+        self.aggregated_centroids = None
+
+    def aggregate_fit(self, rnd, results, failures):
+        aggregated = super().aggregate_fit(rnd, results, failures)
+        # aggregated[0] is combined parameters: list of ndarrays (centroids)
+        self.aggregated_centroids = aggregated[0]
+        return aggregated
+
+strategy = SaveCentroidsStrategy()
+# CHANGED: Use num_rounds from UI
+threading.Thread(
+    target=lambda: fl.server.start_server(
+        server_address="0.0.0.0:8080",
+        config=fl.server.ServerConfig(num_rounds=num_rounds),
+        strategy=strategy
+    ),
+    daemon=True
+).start()
+
 data_centers, gene_names = simulate_federated_data(n_centers)
+# CHANGED: spawn clients
+for center_df in data_centers:
+    threading.Thread(
+        target=start_flower_client,
+        args=(center_df.drop(columns=["Center"]).values, n_clusters),
+        daemon=True
+    ).start()
+
+time.sleep(2 * num_rounds)  # wait for all FL rounds to complete
+
+# -----------------------
+# Retrieve global centroids
+# -----------------------
+if strategy.aggregated_centroids is not None:
+    # CHANGED: fetch from server directly
+    centroids = strategy.aggregated_centroids[0]
+else:
+    # fallback: recompute on full data
+    full_data = pd.concat(data_centers, ignore_index=True)
+    X = full_data.drop(columns=["Center"]).values
+    _, centroids, _ = run_kmeans(X, n_clusters)
+
+# Final clustering on full data using aggregated centroids
 full_data = pd.concat(data_centers, ignore_index=True)
 X = full_data.drop(columns=["Center"]).values
-centroids, labels = run_kmeans(X, n_clusters=n_clusters)
-distances, assigned_clusters = compute_conformal_scores(X, centroids)
-full_data["Cluster"] = assigned_clusters
+labels = np.argmin(((X[:, None, :] - centroids[None, :, :])**2).sum(axis=2), axis=1)
+full_data["Cluster"] = labels
+
+distances = compute_conformal_scores(X, centroids)
 full_data["ConformalScore"] = distances
 
-# PCA projection for plotting
+# -----------------------
+# Conformal calibration
+# -----------------------
+# CHANGED: compute threshold for given confidence level
+threshold = np.quantile(distances, conf_level)
+st.subheader(f"Conformal threshold at {int(conf_level*100)}%: {threshold:.2f}")
+
+# Mark high-confidence vs. ambiguous
+full_data["HighConfidence"] = full_data["ConformalScore"] <= threshold
+
+# Compute chosen metric
+
+full_data = pd.concat(data_centers, ignore_index=True)
+X = full_data.drop(columns=["Center"]).values
+kmeans_model, centroids, labels = run_kmeans(X, n_clusters)
+full_data["Cluster"] = labels
+full_data["ConformalScore"] = compute_conformal_scores(X, centroids)
+
+# Compute chosen metric
+if metric_choice == "Inertia":
+    metric_value = kmeans_model.inertia_
+elif metric_choice == "Silhouette Score":
+    metric_value = metrics.silhouette_score(X, labels)
+elif metric_choice == "Calinski-Harabasz Index":
+    metric_value = metrics.calinski_harabasz_score(X, labels)
+else:
+    metric_value = metrics.davies_bouldin_score(X, labels)
+
+st.subheader(f"Clustering Quality: {metric_choice}")
+st.write(f"**{metric_choice}:** {metric_value:.2f}")
+
+# PCA projection
 pca = PCA(n_components=2)
 proj = pca.fit_transform(X)
 plot_df = pd.DataFrame({"PC1": proj[:, 0], "PC2": proj[:, 1], "Cluster": labels.astype(str)})
 
-# Render chosen plot type
-if plot_type == "Connected Scatter (default Streamlit)":
+# Render plot
+if plot_type == "Connected Scatter":
     st.subheader("Connected Scatter: PC1 vs PC2")
-    st.markdown("*Points connected in index order; colored by cluster.*")
     st.scatter_chart(pd.DataFrame({"PC1": proj[:,0], "PC2": proj[:,1], "Cluster": labels}))
 else:
     st.subheader("Pure Scatter: PC1 vs PC2 (Altair)")
-    st.markdown("*Independent points, colored by cluster with legend and tooltips.*")
     chart = (
         alt.Chart(plot_df)
         .mark_circle(size=60)
-        .encode(
-            x=alt.X("PC1", title="PC1"),
-            y=alt.Y("PC2", title="PC2"),
-            color=alt.Color("Cluster", title="Cluster"),
-            tooltip=["PC1", "PC2", "Cluster"],
-        )
+        .encode(x=alt.X("PC1", title="PC1"), y=alt.Y("PC2", title="PC2"), color=alt.Color("Cluster", title="Cluster"), tooltip=["PC1", "PC2", "Cluster"])
         .properties(width=600, height=400)
     )
     st.altair_chart(chart, use_container_width=True)
 
-# Cluster Annotations section
+# Cluster Annotations
 st.subheader("Cluster Annotations (via OpenRouter)")
 for i in range(n_clusters):
     cluster_data = full_data[full_data["Cluster"] == i]
-    numeric_cols = cluster_data.select_dtypes(include=np.number).columns
-    means = cluster_data[numeric_cols].mean()
-    top_genes = means.sort_values(ascending=False).head(5).index.tolist()
+    top_genes = cluster_data.select_dtypes(include=np.number).mean().sort_values(ascending=False).head(5).index.tolist()
     if st.button(f"Annotate Cluster {i}"):
-        summary = annotate_cluster(top_genes)
-        st.markdown(f"**Cluster {i} Annotation:** {summary}")
+        st.markdown(f"**Cluster {i} Annotation:** {annotate_cluster(top_genes)}")
