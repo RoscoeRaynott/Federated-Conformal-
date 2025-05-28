@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns # For heatmap
+import seaborn as sns
 import flwr as fl
 import threading
 import time
@@ -13,15 +13,14 @@ from sklearn.decomposition import PCA
 import requests
 import altair as alt
 from sklearn import metrics
-import os # To check for example file existence
+import os
 
 # -----------------------
 # Cached Simulation
 # -----------------------
-@st.cache_data # Keep this for simulating the base data
+@st.cache_data
 def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim):
     np.random.seed(42)
-    # Expanded gene list for more features if needed, but will be sliced by n_features_sim
     available_genes = ["TP53","EGFR","VEGFA","IL6","TNF","BRCA1","APOE","ESR1","CRP","IFNG",
                        "CDKN2A","MTHFR","AKT1","BRAF","CTNNB1","FTO","INS","JAK2","KIT","MAPK1",
                        "MTOR","NOS3","PIK3CA","PTEN","RAF1","TGFB1","TGFBR2","TSC1","TSC2","PDGFRA",
@@ -53,7 +52,6 @@ st.title("🧬 Federated Conformal Clustering for Biomarker Discovery")
 # --- Sidebar for Inputs ---
 st.sidebar.header("⚙️ Simulation & Model Parameters")
 
-# Input parameters with explicit keys
 n_centers_input = st.sidebar.slider("Number of Data Centers (N)", 2, 5, 3, key="n_centers_input")
 n_samples_input = st.sidebar.slider("Samples per Center (M)", 10, 200, 50, key="n_samples_input")
 n_features_input = st.sidebar.slider("Number of Genes (G)", 5, 50, 10, key="n_features_input")
@@ -67,9 +65,10 @@ if 'data_centers' not in st.session_state:
     st.session_state.data_centers = []
 if 'gene_names' not in st.session_state:
     st.session_state.gene_names = []
+if 'analysis_run_complete' not in st.session_state:
+    st.session_state.analysis_run_complete = False
 
 
-# Button to generate/regenerate data
 if st.sidebar.button("Generate/Update Data", key="generate_data_btn"):
     st.session_state.data_centers, st.session_state.gene_names = simulate_federated_data_cached(
         n_centers_input, n_samples_input, n_features_input
@@ -80,29 +79,28 @@ if st.sidebar.button("Generate/Update Data", key="generate_data_btn"):
         'n_samples': n_samples_input,
         'n_features': n_features_input
     }
+    st.session_state.analysis_run_complete = False # Reset analysis flag when data changes
     st.sidebar.success("Data generated/updated!")
 
-# Ensure data is generated on first run or if parameters changed and button not clicked yet
 current_params = {'n_centers': n_centers_input, 'n_samples': n_samples_input, 'n_features': n_features_input}
 if not st.session_state.data_generated or st.session_state.sim_params != current_params:
+    # Automatically generate data if parameters change or on first load
     st.session_state.data_centers, st.session_state.gene_names = simulate_federated_data_cached(
         n_centers_input, n_samples_input, n_features_input
     )
     st.session_state.data_generated = True
     st.session_state.sim_params = current_params
-    if not st.session_state.get('fl_strategy'): # If it's the very first run and strategy not set
-         st.sidebar.info("Default data loaded. Click 'Generate/Update Data' to use new parameters if desired.")
+    st.session_state.analysis_run_complete = False # Reset analysis flag
+    if not st.session_state.get('fl_strategy'): # If it's the very first run
+         st.sidebar.info("Default data loaded. Change parameters and click 'Generate/Update Data' if needed.")
 
 
-# Display data preview if data exists
 if st.session_state.data_generated and st.session_state.data_centers:
     st.subheader(f"Preview: Data from {st.session_state.data_centers[0]['Center'].iloc[0]}")
     st.dataframe(st.session_state.data_centers[0].head())
 
-    # Heatmap Preview
     if st.checkbox("Show Heatmap Preview of Center 1 Data (first 10 samples)", key="show_heatmap_preview"):
         fig_preview, ax_preview = plt.subplots()
-        # Ensure gene_names is available and used correctly
         if st.session_state.gene_names:
             data_to_plot = st.session_state.data_centers[0][st.session_state.gene_names].iloc[:10]
             sns.heatmap(data_to_plot, ax=ax_preview, cmap="viridis", yticklabels=st.session_state.data_centers[0]["SampleID"][:10].tolist())
@@ -115,11 +113,9 @@ if st.session_state.data_generated and st.session_state.data_centers:
         else:
             st.warning("Gene names not available for heatmap preview.")
 else:
-    st.info("Click 'Generate/Update Data' in the sidebar to begin.")
+    st.info("Click 'Generate/Update Data' in the sidebar to simulate data and begin.")
     st.stop()
 
-
-# --- Clustering and FL Parameters ---
 st.sidebar.header("🔬 Clustering & Federated Learning")
 n_clusters_input = st.sidebar.slider("Number of Clusters (K)", 2, 5, 3, key="n_clusters_k")
 num_rounds_input = st.sidebar.slider("Federated Rounds", 1, 5, 1, key="num_rounds_fl")
@@ -133,9 +129,6 @@ metric_choice_input = st.sidebar.selectbox(
     key="metric_choice_viz"
 )
 
-# -----------------------
-# Flower Client Definition
-# -----------------------
 class ClusterClient(fl.client.NumPyClient):
     def __init__(self, client_data: np.ndarray, num_clusters: int):
         self.data = client_data
@@ -145,7 +138,6 @@ class ClusterClient(fl.client.NumPyClient):
     def get_parameters(self, config):
         return [self.kmeans.cluster_centers_] if hasattr(self.kmeans, 'cluster_centers_') else []
 
-
     def fit(self, parameters, config):
         self.kmeans.fit(self.data)
         return [self.kmeans.cluster_centers_], len(self.data), {}
@@ -153,9 +145,6 @@ class ClusterClient(fl.client.NumPyClient):
     def evaluate(self, parameters, config):
         return 0.0, len(self.data), {"local_samples": len(self.data)}
 
-# -----------------------
-# Flower Server Setup
-# -----------------------
 class SaveCentroidsStrategy(fl.server.strategy.FedAvg):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -163,37 +152,24 @@ class SaveCentroidsStrategy(fl.server.strategy.FedAvg):
 
     def aggregate_fit(self, server_round, results, failures):
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
-        if aggregated_parameters is not None:
+        if aggregated_parameters is not None and isinstance(aggregated_parameters, list) and len(aggregated_parameters) > 0:
             self.aggregated_centroids_list.append(aggregated_parameters[0])
         return aggregated_parameters, aggregated_metrics
 
-if 'fl_strategy' not in st.session_state:
-    st.session_state.fl_strategy = SaveCentroidsStrategy(
-        min_fit_clients=n_centers_input,
-        min_available_clients=n_centers_input,
-    )
-else: # Update strategy if n_centers_input changes
-    st.session_state.fl_strategy.min_fit_clients = n_centers_input
-    st.session_state.fl_strategy.min_available_clients = n_centers_input
-
-
-# --- OpenRouter LLM Function ---
 def annotate_cluster_llm(gene_list_to_annotate):
     api_key_llm = st.secrets.get("OPENROUTER_API_KEY")
     if not api_key_llm:
         return "OpenRouter API key not configured."
-
     headers = {"Authorization": f"Bearer {api_key_llm}"}
     prompt_content = f"Provide a concise biological theme or pathway related to this list of genes: {', '.join(gene_list_to_annotate)}. Focus on shared functions or roles."
-
     payload = {
-        "model": "mistralai/mistral-7b-instruct:free", # Using a known free model
+        "model": "mistralai/mistral-7b-instruct:free",
         "messages": [{"role": "user", "content": prompt_content}],
         "max_tokens": 150
     }
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        response.raise_for_status() # Will raise an HTTPError for bad responses (4XX or 5XX)
+        response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
     except requests.exceptions.RequestException as e:
         st.error(f"Error connecting to OpenRouter: {e}")
@@ -205,8 +181,6 @@ def annotate_cluster_llm(gene_list_to_annotate):
         st.error(f"An unexpected error occurred during LLM annotation: {e}")
         return "Annotation unavailable."
 
-
-# --- Main Analysis Button ---
 if st.button("🚀 Run Federated Conformal Clustering", key="run_analysis_btn"):
     if not st.session_state.data_generated or not st.session_state.data_centers:
         st.error("Please generate data first using the sidebar button.")
@@ -218,12 +192,11 @@ if st.button("🚀 Run Federated Conformal Clustering", key="run_analysis_btn"):
         "as a separate command-line process: `$ flower-superlink --insecure`"
     )
 
-    # Reset strategy for a new run
     st.session_state.fl_strategy = SaveCentroidsStrategy(
         min_fit_clients=n_centers_input,
         min_available_clients=n_centers_input,
     )
-    
+
     server_thread = threading.Thread(
         target=lambda: fl.server.start_server(
             server_address="0.0.0.0:8080",
@@ -238,7 +211,7 @@ if st.button("🚀 Run Federated Conformal Clustering", key="run_analysis_btn"):
 
     client_threads = []
     for center_idx, center_df_loop in enumerate(st.session_state.data_centers):
-        if st.session_state.gene_names: # Ensure gene_names is not empty
+        if st.session_state.gene_names:
             client_data_np = center_df_loop[st.session_state.gene_names].values
             ct = threading.Thread(
                 target=fl.client.start_numpy_client,
@@ -252,119 +225,130 @@ if st.button("🚀 Run Federated Conformal Clustering", key="run_analysis_btn"):
             st.error("Gene names are missing. Cannot start clients.")
             st.stop()
 
-
-    total_wait_time = 3 * num_rounds_input + n_centers_input
+    total_wait_time = 3 * num_rounds_input + n_centers_input + 2 # Added a bit more buffer
     with st.spinner(f"Running {num_rounds_input} federated rounds... (waiting approx {total_wait_time}s)"):
-        # Wait for all client threads to finish (optional, but good for knowing when FL is done)
-        # for t in client_threads:
-        #     t.join(timeout=total_wait_time / len(client_threads) if client_threads else total_wait_time) # Distribute timeout
         time.sleep(total_wait_time)
     st.success("Federated learning simulation finished.")
 
-    st.subheader("Global Clustering Results")
     global_centroids = None
     if st.session_state.fl_strategy.aggregated_centroids_list:
         global_centroids = st.session_state.fl_strategy.aggregated_centroids_list[-1]
-        st.write("Retrieved aggregated centroids from federated learning.")
     else:
         st.warning("Could not retrieve federated centroids. Performing centralized K-Means as a fallback.")
         combined_data_df_fallback = pd.concat(st.session_state.data_centers, ignore_index=True)
         X_fallback = combined_data_df_fallback[st.session_state.gene_names].values
         kmeans_fallback_model = KMeans(n_clusters=n_clusters_input, random_state=42, n_init='auto').fit(X_fallback)
         global_centroids = kmeans_fallback_model.cluster_centers_
-        st.session_state.kmeans_model_for_metrics = kmeans_fallback_model
+        st.session_state.kmeans_model_for_metrics = kmeans_fallback_model # Store for inertia
 
     if global_centroids is not None:
         combined_data_df = pd.concat(st.session_state.data_centers, ignore_index=True)
         X_full = combined_data_df[st.session_state.gene_names].values
-
         final_labels, final_distances_to_centroids = pairwise_distances_argmin_min(X_full, global_centroids)
         combined_data_df["Cluster"] = final_labels
         conformal_scores = final_distances_to_centroids
         combined_data_df["ConformalScore"] = conformal_scores
-
         conformal_threshold = np.quantile(conformal_scores, conf_level_input)
-        st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {conformal_threshold:.3f}")
         combined_data_df["HighConfidence"] = combined_data_df["ConformalScore"] <= conformal_threshold
-        st.write(f"Number of high-confidence samples: {combined_data_df['HighConfidence'].sum()}")
-        st.write(f"Number of ambiguous/low-confidence samples: {(~combined_data_df['HighConfidence']).sum()}")
 
-        st.subheader(f"Clustering Quality: {metric_choice_input}")
-        metric_value_display = "N/A"
-        try:
-            if metric_choice_input == "Inertia":
-                if 'kmeans_model_for_metrics' in st.session_state and not st.session_state.fl_strategy.aggregated_centroids_list:
-                    metric_value_display = st.session_state.kmeans_model_for_metrics.inertia_
-                else:
-                    metric_value_display = np.sum(conformal_scores**2)
-            elif len(np.unique(final_labels)) > 1:
-                if metric_choice_input == "Silhouette Score":
-                    metric_value_display = metrics.silhouette_score(X_full, final_labels)
-                elif metric_choice_input == "Calinski-Harabasz Index":
-                    metric_value_display = metrics.calinski_harabasz_score(X_full, final_labels)
-                elif metric_choice_input == "Davies-Bouldin Index":
-                    metric_value_display = metrics.davies_bouldin_score(X_full, final_labels)
-            else:
-                metric_value_display = "N/A (requires >1 cluster for this metric)"
-            st.write(f"**{metric_choice_input}:** {metric_value_display:.2f}" if isinstance(metric_value_display, (int, float)) else metric_value_display)
-        except Exception as e:
-            st.error(f"Error calculating metric '{metric_choice_input}': {e}")
-
-        st.subheader("PCA Projection of Clustered Data")
-        try:
-            pca_model = PCA(n_components=2)
-            projected_data = pca_model.fit_transform(X_full)
-            plot_df_pca = pd.DataFrame({
-                "PC1": projected_data[:, 0],
-                "PC2": projected_data[:, 1],
-                "Cluster": final_labels.astype(str),
-                "HighConfidence": combined_data_df["HighConfidence"]
-            })
-
-            if plot_type_input == "Connected Scatter":
-                st.scatter_chart(plot_df_pca, x="PC1", y="PC2", color="Cluster")
-            else:
-                chart = (
-                    alt.Chart(plot_df_pca)
-                    .mark_circle(size=60)
-                    .encode(
-                        x=alt.X("PC1", title="Principal Component 1"),
-                        y=alt.Y("PC2", title="Principal Component 2"),
-                        color=alt.Color("Cluster:N", title="Cluster"),
-                        opacity=alt.condition(
-                            alt.datum.HighConfidence,
-                            alt.value(0.9),
-                            alt.value(0.3)
-                        ),
-                        tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
-                    )
-                    .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
-                    .interactive()
-                )
-                st.altair_chart(chart, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error during PCA and plotting: {e}")
-
-        st.subheader("Cluster Annotations (via OpenRouter LLM)")
-        if not st.secrets.get("OPENROUTER_API_KEY"):
-            st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
-        else:
-            for i in range(n_clusters_input):
-                cluster_subset_df = combined_data_df[combined_data_df["Cluster"] == i]
-                if st.session_state.gene_names and not cluster_subset_df.empty:
-                    cluster_gene_means = cluster_subset_df[st.session_state.gene_names].mean()
-                    top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
-
-                    if st.button(f"Annotate Cluster {i} (Top 5 genes: {', '.join(top_genes_list)})", key=f"annotate_btn_{i}"):
-                        if top_genes_list:
-                            with st.spinner(f"Annotating Cluster {i}..."):
-                                annotation = annotate_cluster_llm(top_genes_list) # Actual LLM call
-                                st.markdown(f"**Cluster {i} Annotation:** {annotation}")
-                        else:
-                            st.write(f"Cluster {i} has no gene data to determine top genes for annotation.")
-                elif cluster_subset_df.empty:
-                     st.write(f"Cluster {i} is empty, skipping annotation.")
-                else:
-                    st.warning("Gene names not available for cluster annotation.")
+        # Store results in session state
+        st.session_state.combined_data_df_clustered = combined_data_df
+        st.session_state.global_centroids_final = global_centroids
+        st.session_state.final_labels_for_plot = final_labels
+        st.session_state.X_full_for_plot = X_full
+        st.session_state.analysis_run_complete = True
     else:
-        st.error("Global centroids could not be determined. Cannot proceed with final clustering and visualization.")
+        st.error("Global centroids could not be determined. Cannot proceed.")
+        st.session_state.analysis_run_complete = False
+
+
+# --- Display results if analysis is complete ---
+if st.session_state.get('analysis_run_complete', False):
+    combined_data_df_to_use = st.session_state.combined_data_df_clustered
+    # global_centroids_to_use = st.session_state.global_centroids_final # Not directly used below but available
+    final_labels_to_use = st.session_state.final_labels_for_plot
+    X_full_to_use = st.session_state.X_full_for_plot
+
+    st.subheader("Global Clustering Results")
+    st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {combined_data_df_to_use['ConformalScore'].quantile(conf_level_input):.3f}")
+    st.write(f"Number of high-confidence samples: {combined_data_df_to_use['HighConfidence'].sum()}")
+    st.write(f"Number of ambiguous/low-confidence samples: {(~combined_data_df_to_use['HighConfidence']).sum()}")
+
+    st.subheader(f"Clustering Quality: {metric_choice_input}")
+    metric_value_display = "N/A"
+    try:
+        if metric_choice_input == "Inertia":
+            # If fallback was used and model stored
+            if 'kmeans_model_for_metrics' in st.session_state and not st.session_state.fl_strategy.aggregated_centroids_list:
+                metric_value_display = st.session_state.kmeans_model_for_metrics.inertia_
+            else: # Calculate from distances
+                metric_value_display = np.sum(combined_data_df_to_use["ConformalScore"]**2)
+        elif len(np.unique(final_labels_to_use)) > 1:
+            if metric_choice_input == "Silhouette Score":
+                metric_value_display = metrics.silhouette_score(X_full_to_use, final_labels_to_use)
+            elif metric_choice_input == "Calinski-Harabasz Index":
+                metric_value_display = metrics.calinski_harabasz_score(X_full_to_use, final_labels_to_use)
+            elif metric_choice_input == "Davies-Bouldin Index":
+                metric_value_display = metrics.davies_bouldin_score(X_full_to_use, final_labels_to_use)
+        else:
+            metric_value_display = "N/A (requires >1 cluster for this metric)"
+        st.write(f"**{metric_choice_input}:** {metric_value_display:.2f}" if isinstance(metric_value_display, (int, float)) else metric_value_display)
+    except Exception as e:
+        st.error(f"Error calculating metric '{metric_choice_input}': {e}")
+
+    st.subheader("PCA Projection of Clustered Data")
+    try:
+        pca_model = PCA(n_components=2)
+        projected_data = pca_model.fit_transform(X_full_to_use)
+        plot_df_pca = pd.DataFrame({
+            "PC1": projected_data[:, 0],
+            "PC2": projected_data[:, 1],
+            "Cluster": final_labels_to_use.astype(str),
+            "HighConfidence": combined_data_df_to_use["HighConfidence"]
+        })
+        if plot_type_input == "Connected Scatter":
+            st.scatter_chart(plot_df_pca, x="PC1", y="PC2", color="Cluster")
+        else:
+            chart = (
+                alt.Chart(plot_df_pca)
+                .mark_circle(size=60)
+                .encode(
+                    x=alt.X("PC1", title="Principal Component 1"),
+                    y=alt.Y("PC2", title="Principal Component 2"),
+                    color=alt.Color("Cluster:N", title="Cluster"),
+                    opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
+                    tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
+                )
+                .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
+                .interactive()
+            )
+            st.altair_chart(chart, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error during PCA and plotting: {e}")
+
+    st.subheader("Cluster Annotations (via OpenRouter LLM)")
+    if not st.secrets.get("OPENROUTER_API_KEY"):
+        st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
+    else:
+        for i in range(n_clusters_input):
+            cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i]
+            if st.session_state.gene_names and not cluster_subset_df.empty:
+                cluster_gene_means = cluster_subset_df[st.session_state.gene_names].mean()
+                top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
+                if st.button(f"Annotate Cluster {i} (Top 5 genes: {', '.join(top_genes_list)})", key=f"annotate_btn_{i}"):
+                    if top_genes_list:
+                        with st.spinner(f"Annotating Cluster {i}..."):
+                            annotation = annotate_cluster_llm(top_genes_list)
+                            st.markdown(f"**Cluster {i} Annotation:** {annotation}")
+                            # Store annotation to prevent re-calling LLM on simple reruns if desired
+                            if 'cluster_annotations' not in st.session_state:
+                                st.session_state.cluster_annotations = {}
+                            st.session_state.cluster_annotations[i] = annotation
+                    else:
+                        st.write(f"Cluster {i} has no gene data to determine top genes for annotation.")
+            elif cluster_subset_df.empty:
+                 st.write(f"Cluster {i} is empty, skipping annotation.")
+            else:
+                st.warning("Gene names not available for cluster annotation.")
+elif st.session_state.data_generated: # Data is generated, but analysis not run yet
+    st.info("Click '🚀 Run Federated Conformal Clustering' to start the analysis.")
