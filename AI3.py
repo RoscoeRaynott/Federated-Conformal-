@@ -64,7 +64,7 @@ def annotate_cluster(gene_list):
     headers = {"Authorization": f"Bearer {api_key}"}
     prompt = f"Summarize this gene list into a biological theme: {gene_list}"
     data = {
-        "model": "mistral/mistral-7b-instruct",
+        "model": "mistralai/Mistral-7B-Instruct-v0.2",
         "messages": [{"role": "user", "content": prompt}]
     }
     response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
