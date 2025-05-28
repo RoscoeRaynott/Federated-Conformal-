@@ -62,7 +62,7 @@ def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim)
             # Choose a cluster based on the preference vector
             k = np.random.choice(K_true, p=p)
             # Generate a sample around the chosen global centroid with noise
-            sample = global_centroids[k] + np.random.normal(0, 1.0, n_features_sim)
+            sample = global_centroids[k] + np.random.normal(0, 3.0, n_features_sim)
             X_data.append(sample)
         X_data = np.array(X_data)
 
