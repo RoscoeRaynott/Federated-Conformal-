@@ -133,31 +133,174 @@ additional_viz_choice = st.sidebar.selectbox(
     key="additional_viz"
 )
 
-# LLM Annotation Function
-def annotate_cluster_llm(gene_list_to_annotate):
+# Enhanced LLM Annotation Function
+def annotate_cluster_llm(gene_list_to_annotate, annotation_type="summary"):
     api_key_llm = st.secrets.get("OPENROUTER_API_KEY")
     if not api_key_llm:
         return "OpenRouter API key not configured."
+    
     headers = {"Authorization": f"Bearer {api_key_llm}"}
-    prompt_content = f"Provide a concise biological theme or pathway related to this list of genes: {', '.join(gene_list_to_annotate)}. Focus on shared functions or roles."
+    
+    # Configure prompts and parameters based on annotation type
+    if annotation_type == "detailed":
+        prompt_content = f"""Provide a detailed biological analysis of this gene cluster: {', '.join(gene_list_to_annotate)}.
+
+Please include:
+1. Primary biological pathways and processes
+2. Functional relationships between the genes
+3. Clinical or therapeutic relevance
+4. Potential biomarker significance
+
+Keep the response comprehensive but under 500 words."""
+        max_tokens = 700
+        temperature = 0.7
+    else:  # summary
+        prompt_content = f"""Provide a concise biological theme or pathway summary for these genes: {', '.join(gene_list_to_annotate)}.
+
+Focus on:
+- Main shared biological function
+- Key pathway(s) involved
+- Brief clinical relevance
+
+Keep response under 150 words."""
+        max_tokens = 250
+        temperature = 0.8
+    
     payload = {
         "model": "mistralai/mistral-7b-instruct:free",
         "messages": [{"role": "user", "content": prompt_content}],
-        "max_tokens": 150
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stop": None
     }
+    
     try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions", 
+            headers=headers, 
+            json=payload, 
+            timeout=45  # Longer timeout for detailed responses
+        )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        result = response.json()
+        
+        # Better error handling for API response
+        if "choices" not in result or len(result["choices"]) == 0:
+            return f"No response generated. API returned: {result}"
+        
+        annotation = result["choices"][0]["message"]["content"].strip()
+        
+        # Check if response was truncated
+        if result["choices"][0].get("finish_reason") == "length":
+            annotation += f" [Note: {annotation_type.title()} response was truncated due to length limits]"
+            
+        return annotation
+        
+    except requests.exceptions.Timeout:
+        return f"Annotation request timed out. Please try again with {'detailed' if annotation_type == 'summary' else 'summary'} mode."
     except requests.exceptions.RequestException as e:
         st.error(f"Error connecting to OpenRouter: {e}")
         return "Annotation unavailable due to connection error."
-    except KeyError:
-        st.error(f"Unexpected response structure from OpenRouter: {response.text}")
-        return "Annotation unavailable due to API response format."
+    except KeyError as e:
+        st.error(f"Unexpected response structure from OpenRouter. Missing key: {e}")
+        return f"Annotation unavailable due to API response format."
     except Exception as e:
         st.error(f"An unexpected error occurred during LLM annotation: {e}")
         return "Annotation unavailable."
+
+# Updated cluster annotation section for the main code
+def render_cluster_annotations(combined_data_df_to_use, gene_names_to_use, n_clusters_input):
+    st.subheader("Cluster Annotations (via OpenRouter LLM)")
+    
+    if not st.secrets.get("OPENROUTER_API_KEY"):
+        st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
+        return
+    
+    # Add annotation type selection
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.write("Generate biological annotations for each cluster based on top-expressed genes:")
+    with col2:
+        annotation_mode = st.selectbox(
+            "Annotation Detail Level:",
+            ["summary", "detailed"],
+            format_func=lambda x: "📝 Summary" if x == "summary" else "📖 Detailed",
+            key="annotation_mode_select"
+        )
+    
+    # Batch annotation option
+    if st.button("🚀 Annotate All Clusters", key="annotate_all_btn"):
+        if 'cluster_annotations' not in st.session_state:
+            st.session_state.cluster_annotations = {}
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i_cluster in range(n_clusters_input):
+            progress_bar.progress((i_cluster) / n_clusters_input)
+            status_text.text(f"Annotating Cluster {i_cluster}...")
+            
+            cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i_cluster]
+            if gene_names_to_use and not cluster_subset_df.empty:
+                cluster_gene_means = cluster_subset_df[gene_names_to_use].mean()
+                top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
+                
+                if top_genes_list:
+                    annotation = annotate_cluster_llm(top_genes_list, annotation_mode)
+                    st.session_state.cluster_annotations[f"{i_cluster}_{annotation_mode}"] = annotation
+        
+        progress_bar.progress(1.0)
+        status_text.text("All clusters annotated!")
+        time.sleep(1)
+        status_text.empty()
+        progress_bar.empty()
+    
+    # Individual cluster annotation buttons and display
+    for i_cluster in range(n_clusters_input):
+        cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i_cluster]
+        
+        if gene_names_to_use and not cluster_subset_df.empty:
+            cluster_gene_means = cluster_subset_df[gene_names_to_use].mean()
+            top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
+            
+            # Create expandable section for each cluster
+            with st.expander(f"🧬 Cluster {i_cluster} (N={len(cluster_subset_df)}) - Top genes: {', '.join(top_genes_list)}", expanded=False):
+                
+                col_btn, col_switch = st.columns([2, 1])
+                
+                with col_btn:
+                    if st.button(f"Generate {annotation_mode.title()} Annotation", key=f"annotate_btn_{i_cluster}_{annotation_mode}"):
+                        if top_genes_list:
+                            with st.spinner(f"Generating {annotation_mode} annotation for Cluster {i_cluster}..."):
+                                annotation = annotate_cluster_llm(top_genes_list, annotation_mode)
+                                st.session_state.cluster_annotations = st.session_state.get('cluster_annotations', {})
+                                st.session_state.cluster_annotations[f"{i_cluster}_{annotation_mode}"] = annotation
+                        else:
+                            st.write(f"Cluster {i_cluster} has no gene data for annotation.")
+                
+                # Display existing annotations
+                summary_key = f"{i_cluster}_summary"
+                detailed_key = f"{i_cluster}_detailed"
+                
+                if summary_key in st.session_state.get('cluster_annotations', {}):
+                    st.markdown("**📝 Summary Annotation:**")
+                    st.markdown(st.session_state.cluster_annotations[summary_key])
+                
+                if detailed_key in st.session_state.get('cluster_annotations', {}):
+                    st.markdown("**📖 Detailed Annotation:**")
+                    st.markdown(st.session_state.cluster_annotations[detailed_key])
+                
+                # Show top genes with their mean expression values
+                if top_genes_list:
+                    st.markdown("**Top 5 Genes by Mean Expression:**")
+                    top_gene_values = cluster_gene_means.sort_values(ascending=False).head(5)
+                    for gene, value in top_gene_values.items():
+                        st.write(f"• {gene}: {value:.3f}")
+        
+        elif cluster_subset_df.empty:
+            st.write(f"Cluster {i_cluster} is empty, skipping annotation.")
+        else:
+            st.warning("Gene names not available for cluster annotation.")
 
 # Manual (Simulated) Federated K-Means Function
 def run_manual_simulated_distributed_kmeans(data_centers_list, gene_names_list, n_clusters_fed, num_rounds_fed):
@@ -545,28 +688,4 @@ if st.session_state.get('analysis_run_complete', False):
         else:
             st.warning("Clustering results needed for Streamlit native PCA scatter plot are not available.")
 
-    st.subheader("Cluster Annotations (via OpenRouter LLM)")
-    if not st.secrets.get("OPENROUTER_API_KEY"):
-        st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
-    else:
-        for i_cluster_annotate in range(n_clusters_input): # Renamed loop var
-            cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i_cluster_annotate]
-            if gene_names_to_use and not cluster_subset_df.empty:
-                cluster_gene_means = cluster_subset_df[gene_names_to_use].mean()
-                top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
-                if st.button(f"Annotate Cluster {i_cluster_annotate} (Top 5 genes: {', '.join(top_genes_list)})", key=f"annotate_btn_{i_cluster_annotate}"):
-                    if top_genes_list:
-                        with st.spinner(f"Annotating Cluster {i_cluster_annotate}..."):
-                            annotation = annotate_cluster_llm(top_genes_list)
-                            st.markdown(f"**Cluster {i_cluster_annotate} Annotation:** {annotation}")
-                            if 'cluster_annotations' not in st.session_state:
-                                st.session_state.cluster_annotations = {}
-                            st.session_state.cluster_annotations[i_cluster_annotate] = annotation
-                    else:
-                        st.write(f"Cluster {i_cluster_annotate} has no gene data to determine top genes for annotation.")
-            elif cluster_subset_df.empty:
-                 st.write(f"Cluster {i_cluster_annotate} is empty, skipping annotation.")
-            else:
-                st.warning("Gene names not available for cluster annotation.")
-elif st.session_state.data_generated:
-    st.info("Click '🚀 Run Simulated Distributed Conformal Clustering' to start the analysis.")
+     render_cluster_annotations(combined_data_df_to_use, gene_names_to_use, n_clusters_input)
