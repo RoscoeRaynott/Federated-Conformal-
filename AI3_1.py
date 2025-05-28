@@ -47,7 +47,7 @@ def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim)
     K_true = 3  # Hardcoded for simplicity; represents the number of global clusters
 
     # Generate global centroids with a larger spread to ensure distinct clusters
-    global_centroids = np.random.normal(0, 2.0, size=(K_true, n_features_sim))
+    global_centroids = np.random.normal(0, 1.0, size=(K_true, n_features_sim))
 
     data_centers_list = []
     for i in range(n_centers_sim):
