@@ -446,22 +446,53 @@ if st.session_state.get('analysis_run_complete', False):
                 pca_3d = PCA(n_components=3)
                 projected_3d = pca_3d.fit_transform(X_full_to_use)
                 df_3d_pca = pd.DataFrame({
-                    "PC1": projected_3d[:, 0], "PC2": projected_3d[:, 1], "PC3": projected_3d[:, 2],
+                    "PC1": projected_3d[:, 0], 
+                    "PC2": projected_3d[:, 1], 
+                    "PC3": projected_3d[:, 2],
                     "Cluster": final_labels_to_use.astype(str),
                     "HighConfidence": combined_data_df_to_use["HighConfidence"]
                 })
-                df_3d_pca['MarkerOpacity'] = df_3d_pca['HighConfidence'].apply(lambda x: 0.9 if x else 0.3)
+                
+                # Create separate dataframes for high and low confidence
+                df_high_conf = df_3d_pca[df_3d_pca["HighConfidence"]]
+                df_low_conf = df_3d_pca[~df_3d_pca["HighConfidence"]]
+                
+                # Create figure with high confidence points (high opacity)
                 fig_3d = px.scatter_3d(
-                    df_3d_pca, x='PC1', y='PC2', z='PC3', color='Cluster',
-                    opacity='MarkerOpacity',
-                    title="3D PCA of Clustered Data", labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
+                    df_high_conf, 
+                    x='PC1', 
+                    y='PC2', 
+                    z='PC3', 
+                    color='Cluster',
+                    title="3D PCA of Clustered Data (High Confidence: Solid, Low Confidence: Transparent)", 
+                    labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
                     hover_data=["Cluster", "HighConfidence"]
                 )
-                fig_3d.update_traces(marker=dict(size=5))
+                fig_3d.update_traces(marker=dict(size=5, opacity=0.9))
+                
+                # Add low confidence points (low opacity)
+                if not df_low_conf.empty:
+                    fig_low = px.scatter_3d(
+                        df_low_conf, 
+                        x='PC1', 
+                        y='PC2', 
+                        z='PC3', 
+                        color='Cluster',
+                        hover_data=["Cluster", "HighConfidence"]
+                    )
+                    fig_low.update_traces(marker=dict(size=5, opacity=0.3), showlegend=False)
+                    
+                    # Add low confidence traces to the main figure
+                    for trace in fig_low.data:
+                        fig_3d.add_trace(trace)
+                
                 fig_3d.update_layout(margin=dict(l=0, r=0, b=0, t=40))
                 st.plotly_chart(fig_3d, use_container_width=True)
-            except Exception as e: st.error(f"Error during 3D PCA: {e}")
-        else: st.warning("Need at least 3 features/genes for 3D PCA.")
+                
+            except Exception as e: 
+                st.error(f"Error during 3D PCA: {e}")
+        else: 
+            st.warning("Need at least 3 features/genes for 3D PCA.")
 
     elif additional_viz_choice == "Gene BoxPlots":
         st.subheader("Gene Expression Distribution by Cluster (Box Plots)")
