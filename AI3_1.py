@@ -22,27 +22,56 @@ import plotly.express as px
 # -----------------------
 @st.cache_data
 def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim):
-    np.random.seed(42)
-    available_genes = ["TP53","EGFR","VEGFA","IL6","TNF","BRCA1","APOE","ESR1","CRP","IFNG",
-                       "CDKN2A","MTHFR","AKT1","BRAF","CTNNB1","FTO","INS","JAK2","KIT","MAPK1",
-                       "MTOR","NOS3","PIK3CA","PTEN","RAF1","TGFB1","TGFBR2","TSC1","TSC2","PDGFRA",
-                       "NFKB1","SMAD4","CCND1","FGFR1","ABL1","EGF","CXCL8","IL10","RELA","STAT3",
-                       "CXCL10","CDK4","CDK6","CASP3","CASP8","CD19","CD8A","FOXP3","GATA3","MYC"]
+    import numpy as np
+    import pandas as pd
+    import streamlit as st
 
+    # Set random seed for reproducibility
+    np.random.seed(42)
+
+    # List of gene names (unchanged)
+    available_genes = ["TP53", "EGFR", "VEGFA", "IL6", "TNF", "BRCA1", "APOE", "ESR1", "CRP", "IFNG",
+                       "CDKN2A", "MTHFR", "AKT1", "BRAF", "CTNNB1", "FTO", "INS", "JAK2", "KIT", "MAPK1",
+                       "MTOR", "NOS3", "PIK3CA", "PTEN", "RAF1", "TGFB1", "TGFBR2", "TSC1", "TSC2", "PDGFRA",
+                       "NFKB1", "SMAD4", "CCND1", "FGFR1", "ABL1", "EGF", "CXCL8", "IL10", "RELA", "STAT3",
+                       "CXCL10", "CDK4", "CDK6", "CASP3", "CASP8", "CD19", "CD8A", "FOXP3", "GATA3", "MYC"]
+
+    # Handle case where requested features exceed available genes
     if n_features_sim > len(available_genes):
         st.warning(f"Requested {n_features_sim} features, but only {len(available_genes)} unique gene names are available. Using all available.")
         n_features_sim = len(available_genes)
 
     selected_genes = available_genes[:n_features_sim]
 
+    # Define the number of true underlying clusters
+    K_true = 3  # Hardcoded for simplicity; represents the number of global clusters
+
+    # Generate global centroids with a larger spread to ensure distinct clusters
+    global_centroids = np.random.normal(0, 5.0, size=(K_true, n_features_sim))
+
     data_centers_list = []
     for i in range(n_centers_sim):
-        mean_shift = np.random.normal(0, 1.5, n_features_sim)
-        X_data = np.random.normal(loc=mean_shift, scale=1.0, size=(n_samples_sim, n_features_sim))
+        # Assign each center to prefer one of the K_true clusters
+        associated_cluster = i % K_true  # Cycles through 0, 1, 2 if K_true = 3
+        # Preference vector: 80% of samples from the associated cluster, 20% from others
+        p = [0.8 if k == associated_cluster else 0.2 / (K_true - 1) for k in range(K_true)]
+
+        # Generate samples for this center
+        X_data = []
+        for _ in range(n_samples_sim):
+            # Choose a cluster based on the preference vector
+            k = np.random.choice(K_true, p=p)
+            # Generate a sample around the chosen global centroid with noise
+            sample = global_centroids[k] + np.random.normal(0, 1.0, n_features_sim)
+            X_data.append(sample)
+        X_data = np.array(X_data)
+
+        # Create DataFrame
         df = pd.DataFrame(X_data, columns=selected_genes)
         df["Center"] = f"Center_{i+1}"
         df["SampleID"] = [f"S{i+1}_{j+1}" for j in range(n_samples_sim)]
         data_centers_list.append(df)
+
     return data_centers_list, selected_genes
 
 # -----------------------
