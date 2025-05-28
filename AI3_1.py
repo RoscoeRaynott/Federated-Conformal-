@@ -52,7 +52,7 @@ def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim,
         for _ in range(n_samples_sim):
             k = np.random.choice(K_true, p=p)
             # Make local data points tighter around their chosen global centroid to emphasize center differences
-            sample = global_centroids[k] + np.random.normal(0, 0.5, n_features_sim) # Reduced local noise
+            sample = global_centroids[k] + np.random.normal(0, 0.1, n_features_sim) # Reduced local noise
             X_data_center.append(sample)
         X_data_center_np = np.array(X_data_center) # Renamed
 
