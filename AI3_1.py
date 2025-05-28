@@ -1,0 +1,553 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+# import flwr as fl # REMOVED
+# import threading # REMOVED for Flower, might be used for other UI things if added later
+import time
+from sklearn.cluster import KMeans # DBSCAN, AgglomerativeClustering not used in this specific path now
+# from sklearn.mixture import GaussianMixture # Not used in this specific path
+from sklearn.metrics import pairwise_distances_argmin_min
+from sklearn.decomposition import PCA
+import requests
+import altair as alt
+from sklearn import metrics
+import os
+import plotly.express as px
+# import pickle # REMOVED (was for Flower strategy)
+
+# -----------------------
+# Cached Simulation
+# -----------------------
+@st.cache_data
+def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim):
+    np.random.seed(42)
+    available_genes = ["TP53","EGFR","VEGFA","IL6","TNF","BRCA1","APOE","ESR1","CRP","IFNG",
+                       "CDKN2A","MTHFR","AKT1","BRAF","CTNNB1","FTO","INS","JAK2","KIT","MAPK1",
+                       "MTOR","NOS3","PIK3CA","PTEN","RAF1","TGFB1","TGFBR2","TSC1","TSC2","PDGFRA",
+                       "NFKB1","SMAD4","CCND1","FGFR1","ABL1","EGF","CXCL8","IL10","RELA","STAT3",
+                       "CXCL10","CDK4","CDK6","CASP3","CASP8","CD19","CD8A","FOXP3","GATA3","MYC"]
+
+    if n_features_sim > len(available_genes):
+        st.warning(f"Requested {n_features_sim} features, but only {len(available_genes)} unique gene names are available. Using all available.")
+        n_features_sim = len(available_genes)
+
+    selected_genes = available_genes[:n_features_sim]
+
+    data_centers_list = []
+    for i in range(n_centers_sim):
+        mean_shift = np.random.normal(0, 1.5, n_features_sim)
+        X_data = np.random.normal(loc=mean_shift, scale=1.0, size=(n_samples_sim, n_features_sim))
+        df = pd.DataFrame(X_data, columns=selected_genes)
+        df["Center"] = f"Center_{i+1}"
+        df["SampleID"] = [f"S{i+1}_{j+1}" for j in range(n_samples_sim)]
+        data_centers_list.append(df)
+    return data_centers_list, selected_genes
+
+# -----------------------
+# Streamlit UI: Setup
+# -----------------------
+st.set_page_config(page_title="Simulated Distributed Conformal Clustering", layout="wide")
+st.title("🧬 Simulated Distributed Conformal Clustering for Biomarker Discovery")
+
+# --- Sidebar for Inputs ---
+st.sidebar.header("⚙️ Simulation & Model Parameters")
+
+n_centers_input = st.sidebar.slider("Number of Simulated Data Centers (N)", 2, 5, 3, key="n_centers_input")
+n_samples_input = st.sidebar.slider("Samples per Center (M)", 10, 200, 50, key="n_samples_input")
+n_features_input = st.sidebar.slider("Number of Genes (G)", 5, 50, 10, key="n_features_input")
+
+# Initialize session state
+if 'data_generated' not in st.session_state:
+    st.session_state.data_generated = False
+if 'sim_params' not in st.session_state:
+    st.session_state.sim_params = {}
+if 'data_centers' not in st.session_state:
+    st.session_state.data_centers = []
+if 'gene_names' not in st.session_state:
+    st.session_state.gene_names = []
+if 'analysis_run_complete' not in st.session_state:
+    st.session_state.analysis_run_complete = False
+
+
+if st.sidebar.button("Generate/Update Data", key="generate_data_btn"):
+    st.session_state.data_centers, st.session_state.gene_names = simulate_federated_data_cached(
+        n_centers_input, n_samples_input, n_features_input
+    )
+    st.session_state.data_generated = True
+    st.session_state.sim_params = {
+        'n_centers': n_centers_input,
+        'n_samples': n_samples_input,
+        'n_features': n_features_input
+    }
+    st.session_state.analysis_run_complete = False
+    st.sidebar.success("Data generated/updated!")
+
+current_params = {'n_centers': n_centers_input, 'n_samples': n_samples_input, 'n_features': n_features_input}
+if not st.session_state.data_generated or st.session_state.sim_params != current_params:
+    st.session_state.data_centers, st.session_state.gene_names = simulate_federated_data_cached(
+        n_centers_input, n_samples_input, n_features_input
+    )
+    st.session_state.data_generated = True
+    st.session_state.sim_params = current_params
+    st.session_state.analysis_run_complete = False
+    st.sidebar.info("Default data loaded. Change parameters and click 'Generate/Update Data' if needed.")
+
+
+if st.session_state.data_generated and st.session_state.data_centers:
+    st.subheader(f"Preview: Data from {st.session_state.data_centers[0]['Center'].iloc[0]}")
+    st.dataframe(st.session_state.data_centers[0].head())
+
+    if st.checkbox("Show Heatmap Preview of Center 1 Data (first 10 samples)", key="show_heatmap_preview"):
+        fig_preview, ax_preview = plt.subplots()
+        if st.session_state.gene_names:
+            data_to_plot = st.session_state.data_centers[0][st.session_state.gene_names].iloc[:10]
+            sns.heatmap(data_to_plot, ax=ax_preview, cmap="viridis", yticklabels=st.session_state.data_centers[0]["SampleID"][:10].tolist())
+            ax_preview.set_title(f"Gene Expression Heatmap (Center 1, Top 10 Samples)")
+            ax_preview.set_xlabel("Genes")
+            ax_preview.set_ylabel("SampleID")
+            plt.xticks(rotation=90, ha='right')
+            plt.yticks(rotation=0)
+            st.pyplot(fig_preview)
+        else:
+            st.warning("Gene names not available for heatmap preview.")
+else:
+    st.info("Click 'Generate/Update Data' in the sidebar to simulate data and begin.")
+    st.stop()
+
+st.sidebar.header("🔬 Clustering Parameters")
+n_clusters_input = st.sidebar.slider("Number of Clusters (K)", 2, 5, 3, key="n_clusters_k")
+num_simulation_rounds_input = st.sidebar.slider("Simulated Distributed Iterative Rounds", 1, 10, 3, key="manual_rounds_sim")
+conf_level_input = st.sidebar.slider("Conformal Confidence Level (α)", 0.50, 0.99, 0.90, step=0.01, key="conf_level_alpha")
+
+st.sidebar.header("📊 Visualization & Metrics")
+metric_choice_input = st.sidebar.selectbox(
+    "Clustering Quality Metric",
+    ["Silhouette Score", "Calinski-Harabasz Index", "Davies-Bouldin Index", "Inertia"],
+    key="metric_choice_viz"
+)
+additional_viz_choice = st.sidebar.selectbox(
+    "Additional Cluster Visualization",
+    ["None", "Mean Cluster Curves", "Parallel Coordinates", "Heatmap of Mean Profiles", "3D PCA Scatter", "Gene BoxPlots", "PCA Scatter (Streamlit Native)"],
+    key="additional_viz"
+)
+
+# LLM Annotation Function
+def annotate_cluster_llm(gene_list_to_annotate):
+    api_key_llm = st.secrets.get("OPENROUTER_API_KEY")
+    if not api_key_llm:
+        return "OpenRouter API key not configured."
+    headers = {"Authorization": f"Bearer {api_key_llm}"}
+    prompt_content = f"Provide a concise biological theme or pathway related to this list of genes: {', '.join(gene_list_to_annotate)}. Focus on shared functions or roles."
+    payload = {
+        "model": "mistralai/mistral-7b-instruct:free",
+        "messages": [{"role": "user", "content": prompt_content}],
+        "max_tokens": 150
+    }
+    try:
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error connecting to OpenRouter: {e}")
+        return "Annotation unavailable due to connection error."
+    except KeyError:
+        st.error(f"Unexpected response structure from OpenRouter: {response.text}")
+        return "Annotation unavailable due to API response format."
+    except Exception as e:
+        st.error(f"An unexpected error occurred during LLM annotation: {e}")
+        return "Annotation unavailable."
+
+# Manual (Simulated) Federated K-Means Function
+def run_manual_simulated_distributed_kmeans(data_centers_list, gene_names_list, n_clusters_fed, num_rounds_fed):
+    st.write("--- Starting Manual Simulated Distributed K-Means ---")
+    all_local_data_np = [df[gene_names_list].values for df in data_centers_list]
+    
+    # Robust initialization: Use K-Means++ on a combined sample for initial centroids
+    # This is better than just using the first center or random points.
+    combined_sample_for_init = np.vstack([data[:min(50, len(data))] for data in all_local_data_np if len(data) > 0]) # Sample up to 50 from each
+    if len(combined_sample_for_init) < n_clusters_fed:
+        st.error("Not enough data across all centers for robust centroid initialization. Consider increasing samples per center.")
+        # Fallback to simpler initialization if combined sample is too small
+        if len(all_local_data_np[0]) >= n_clusters_fed:
+             initial_kmeans = KMeans(n_clusters=n_clusters_fed, random_state=42, n_init='auto').fit(all_local_data_np[0])
+             global_centroids_fed = initial_kmeans.cluster_centers_
+        else: # Absolute fallback: random points from first center
+            st.warning("Using random points from first center for initialization due to small sample size.")
+            indices = np.random.choice(all_local_data_np[0].shape[0], n_clusters_fed, replace=False)
+            global_centroids_fed = all_local_data_np[0][indices]
+    else:
+        initial_kmeans = KMeans(n_clusters=n_clusters_fed, init='k-means++', random_state=42, n_init='auto').fit(combined_sample_for_init)
+        global_centroids_fed = initial_kmeans.cluster_centers_
+    
+    st.write(f"Initial global centroids shape: {global_centroids_fed.shape}")
+
+    for r_idx in range(num_rounds_fed):
+        st.write(f"Simulated Distributed Round {r_idx+1}/{num_rounds_fed}")
+        
+        new_global_centroids_sum = np.zeros_like(global_centroids_fed)
+        total_points_in_each_global_cluster = np.zeros(n_clusters_fed, dtype=int)
+
+        for i, local_data in enumerate(all_local_data_np):
+            if local_data.shape[0] == 0:
+                continue # Skip empty centers
+            
+            # Assign local data points to the current global centroids
+            local_assignments = np.argmin(
+                metrics.pairwise_distances(local_data, global_centroids_fed, metric='euclidean'),
+                axis=1
+            )
+
+            # Calculate new local centroids based on these assignments
+            current_center_local_centroids = np.zeros_like(global_centroids_fed)
+            counts_for_local_centroids = np.zeros(n_clusters_fed, dtype=int)
+
+            for k_cluster in range(n_clusters_fed):
+                points_in_k = local_data[local_assignments == k_cluster]
+                if len(points_in_k) > 0:
+                    current_center_local_centroids[k_cluster] = points_in_k.mean(axis=0)
+                    counts_for_local_centroids[k_cluster] = len(points_in_k)
+                else:
+                    # If a cluster is empty for this local center, it contributes nothing to its update
+                    # Or, one might use the global centroid as its local estimate (less common for simple FedAvg)
+                    pass
+            
+            # Accumulate for weighted averaging of centroids
+            new_global_centroids_sum += current_center_local_centroids * counts_for_local_centroids[:, np.newaxis]
+            total_points_in_each_global_cluster += counts_for_local_centroids
+        
+        # Aggregate: Calculate new global centroids (weighted average)
+        for k_cluster in range(n_clusters_fed):
+            if total_points_in_each_global_cluster[k_cluster] > 0:
+                global_centroids_fed[k_cluster] = new_global_centroids_sum[k_cluster] / total_points_in_each_global_cluster[k_cluster]
+            else:
+                # Handle globally empty cluster: Re-initialize from furthest point in all data (more robust)
+                # For simplicity, if a global cluster becomes empty, we might just leave its centroid as is from previous round,
+                # or pick a random point from all_local_data_np. This needs careful handling in production.
+                st.warning(f"Global cluster {k_cluster} became empty. Re-initializing strategies needed for robustness (not fully implemented here).")
+                # As a simple fallback here, we don't update it, or re-initialize from a random data point.
+                # For demo, if this happens with few points, it's okay.
+                if len(all_local_data_np) > 0 and len(all_local_data_np[0]) > 0 :
+                    random_center_idx = np.random.randint(len(all_local_data_np))
+                    if len(all_local_data_np[random_center_idx]) > 0:
+                         random_point_idx = np.random.randint(all_local_data_np[random_center_idx].shape[0])
+                         global_centroids_fed[k_cluster] = all_local_data_np[random_center_idx][random_point_idx]
+
+
+        st.write(f"Round {r_idx+1} global centroids updated.")
+    
+    st.write("--- Manual Simulated Distributed K-Means Finished ---")
+    return global_centroids_fed
+
+
+# --- Main Analysis Button ---
+if st.button("🚀 Run Simulated Distributed Conformal Clustering", key="run_analysis_btn"):
+    if not st.session_state.data_generated or not st.session_state.data_centers:
+        st.error("Please generate data first using the sidebar button.")
+        st.stop()
+
+    global_centroids = None
+    st.session_state.analysis_run_complete = False
+
+    if st.session_state.gene_names:
+        with st.spinner(f"Running {num_simulation_rounds_input} rounds of simulated distributed K-Means..."):
+            global_centroids = run_manual_simulated_distributed_kmeans(
+                st.session_state.data_centers,
+                st.session_state.gene_names,
+                n_clusters_input,
+                num_simulation_rounds_input
+            )
+        st.success("Simulated distributed K-Means finished.")
+    else:
+        st.error("Gene names are missing, cannot run K-Means.")
+        st.stop()
+    
+    if global_centroids is not None:
+        combined_data_df = pd.concat(st.session_state.data_centers, ignore_index=True)
+        X_full = combined_data_df[st.session_state.gene_names].values
+        
+        final_labels, final_distances_to_centroids = pairwise_distances_argmin_min(X_full, global_centroids)
+        combined_data_df["Cluster"] = final_labels
+        conformal_scores = final_distances_to_centroids
+        combined_data_df["ConformalScore"] = conformal_scores
+        
+        conformal_threshold = np.quantile(conformal_scores, conf_level_input)
+        combined_data_df["HighConfidence"] = combined_data_df["ConformalScore"] <= conformal_threshold
+
+        st.session_state.combined_data_df_clustered = combined_data_df
+        st.session_state.final_labels_for_plot = final_labels
+        st.session_state.X_full_for_plot = X_full
+        st.session_state.analysis_run_complete = True
+        
+        # For metric calculation (Inertia), since we don't have a single KMeans model object
+        # that produced these federated centroids, we calculate inertia manually.
+        # Other metrics use X_full and final_labels.
+        # Clear any previous centralized model to avoid confusion for inertia calc.
+        if 'kmeans_model_for_metrics' in st.session_state:
+            del st.session_state['kmeans_model_for_metrics']
+    else:
+        st.error("Simulated distributed centroids could not be determined. Cannot proceed.")
+        st.session_state.analysis_run_complete = False
+
+    # --- Optional: Comparison with fully centralized K-Means ---
+    if st.session_state.analysis_run_complete and st.checkbox("Compare with Fully Centralized K-Means Results", key="compare_centralized_cb"):
+        st.write("--- Running Fully Centralized K-Means for Comparison ---")
+        X_full_comp = st.session_state.X_full_for_plot # Use the already prepared full data
+
+        kmeans_centralized = KMeans(n_clusters=n_clusters_input, random_state=42, n_init='auto').fit(X_full_comp)
+        centralized_centroids_comp = kmeans_centralized.cluster_centers_
+        centralized_labels_comp = kmeans_centralized.labels_
+        
+        st.write("**Simulated Distributed Centroids (first 2 genes):**")
+        st.dataframe(pd.DataFrame(global_centroids[:, :2], columns=st.session_state.gene_names[:2]))
+        st.write("**Fully Centralized Centroids (first 2 genes):**")
+        st.dataframe(pd.DataFrame(centralized_centroids_comp[:, :2], columns=st.session_state.gene_names[:2]))
+
+        if len(np.unique(st.session_state.final_labels_for_plot)) > 1:
+            st.write(f"Silhouette Score (Simulated Distributed Labels): {metrics.silhouette_score(X_full_comp, st.session_state.final_labels_for_plot):.3f}")
+        if len(np.unique(centralized_labels_comp)) > 1:
+            st.write(f"Silhouette Score (Centralized Labels): {metrics.silhouette_score(X_full_comp, centralized_labels_comp):.3f}")
+        st.write(f"Inertia (Centralized): {kmeans_centralized.inertia_:.2f}")
+        st.write(f"Inertia (Simulated Distributed - sum of squared distances): {np.sum(st.session_state.combined_data_df_clustered['ConformalScore']**2):.2f}")
+
+
+# --- Display results if analysis is complete ---
+if st.session_state.get('analysis_run_complete', False):
+    combined_data_df_to_use = st.session_state.combined_data_df_clustered
+    final_labels_to_use = st.session_state.final_labels_for_plot
+    X_full_to_use = st.session_state.X_full_for_plot
+    gene_names_to_use = st.session_state.gene_names
+
+    st.subheader("Global Clustering Results (Simulated Distributed)")
+    current_conformal_threshold = np.quantile(combined_data_df_to_use['ConformalScore'], conf_level_input)
+    st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {current_conformal_threshold:.3f}")
+    st.write(f"Number of high-confidence samples: {combined_data_df_to_use['HighConfidence'].sum()}")
+    st.write(f"Number of ambiguous/low-confidence samples: {(~combined_data_df_to_use['HighConfidence']).sum()}")
+
+    st.subheader(f"Clustering Quality: {metric_choice_input}")
+    metric_value_display = "N/A"
+    try:
+        if metric_choice_input == "Inertia":
+             # Inertia is sum of squared distances of samples to their closest cluster center.
+            metric_value_display = np.sum(combined_data_df_to_use["ConformalScore"]**2)
+        elif len(np.unique(final_labels_to_use)) > 1:
+            if metric_choice_input == "Silhouette Score":
+                metric_value_display = metrics.silhouette_score(X_full_to_use, final_labels_to_use)
+            elif metric_choice_input == "Calinski-Harabasz Index":
+                metric_value_display = metrics.calinski_harabasz_score(X_full_to_use, final_labels_to_use)
+            elif metric_choice_input == "Davies-Bouldin Index":
+                metric_value_display = metrics.davies_bouldin_score(X_full_to_use, final_labels_to_use)
+        else:
+            metric_value_display = "N/A (requires >1 cluster for this metric)"
+        st.write(f"**{metric_choice_input}:** {metric_value_display:.2f}" if isinstance(metric_value_display, (int, float)) else metric_value_display)
+    except Exception as e:
+        st.error(f"Error calculating metric '{metric_choice_input}': {e}")
+
+    # Default PCA Plot (Altair)
+    st.subheader("PCA Projection of Clustered Data (Altair)")
+    try:
+        pca_model = PCA(n_components=2)
+        projected_data = pca_model.fit_transform(X_full_to_use)
+        plot_df_pca = pd.DataFrame({
+            "PC1": projected_data[:, 0],
+            "PC2": projected_data[:, 1],
+            "Cluster": final_labels_to_use.astype(str),
+            "HighConfidence": combined_data_df_to_use["HighConfidence"]
+        })
+        chart = (
+            alt.Chart(plot_df_pca)
+            .mark_circle(size=60)
+            .encode(
+                x=alt.X("PC1", title="Principal Component 1"),
+                y=alt.Y("PC2", title="Principal Component 2"),
+                color=alt.Color("Cluster:N", title="Cluster"),
+                opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
+                tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
+            )
+            .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error during PCA and plotting: {e}")
+
+    # --- Additional Visualizations ---
+    if additional_viz_choice == "Mean Cluster Curves":
+        st.subheader("Mean Curves per Cluster")
+        unique_clusters = sorted(combined_data_df_to_use['Cluster'].unique())
+        n_cols_mc = 2
+        n_rows_mc = (len(unique_clusters) + n_cols_mc - 1) // n_cols_mc
+        fig_mean_curves, axs_mc = plt.subplots(n_rows_mc, n_cols_mc, figsize=(n_cols_mc * 6, n_rows_mc * 4), squeeze=False)
+        axs_mc_flat = axs_mc.flatten()
+        for idx, cluster_id in enumerate(unique_clusters):
+            if idx < len(axs_mc_flat):
+                ax = axs_mc_flat[idx]
+                cluster_data_mc = combined_data_df_to_use[combined_data_df_to_use['Cluster'] == cluster_id][gene_names_to_use]
+                if not cluster_data_mc.empty:
+                    mean_curve = cluster_data_mc.mean(axis=0)
+                    ax.plot(gene_names_to_use, mean_curve, color=f'C{int(cluster_id) % 10}', linewidth=2, label=f"Mean Cluster {cluster_id}")
+                    if st.checkbox(f"Show individual curves for Cluster {cluster_id}", key=f"show_ind_c{cluster_id}"):
+                        for _, row_val in cluster_data_mc.iterrows():
+                            ax.plot(gene_names_to_use, row_val, color=f'C{int(cluster_id) % 10}', alpha=0.2)
+                    ax.set_title(f"Cluster {cluster_id} (N={len(cluster_data_mc)})")
+                    ax.set_xlabel("Genes / Features")
+                    ax.set_ylabel("Expression Value")
+                    ax.legend()
+        for i_ax_mc in range(len(unique_clusters), len(axs_mc_flat)): fig_mean_curves.delaxes(axs_mc_flat[i_ax_mc])
+        plt.tight_layout()
+        st.pyplot(fig_mean_curves)
+
+    elif additional_viz_choice == "Parallel Coordinates":
+        st.subheader("Parallel Coordinates Plot of Clusters")
+        if not gene_names_to_use:
+            st.warning("No gene names available for parallel coordinates plot.")
+        else:
+            num_genes_for_parallel = min(10, len(gene_names_to_use))
+            genes_for_plot_parallel = gene_names_to_use[:num_genes_for_parallel]
+            if not genes_for_plot_parallel:
+                st.warning("No genes selected or available for parallel coordinates plot.")
+            elif not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
+                try:
+                    df_for_parallel = combined_data_df_to_use.copy()
+                    unique_cluster_labels_str = sorted(df_for_parallel['Cluster'].astype(str).unique())
+                    label_to_numeric_map = {label: i for i, label_str_val in enumerate(unique_cluster_labels_str)} # Renamed inner var
+                    df_for_parallel['ClusterNumeric'] = df_for_parallel['Cluster'].astype(str).map(label_to_numeric_map)
+                    
+                    temp_genes_for_plot_parallel = list(genes_for_plot_parallel)
+                    for gene_iter in temp_genes_for_plot_parallel[:]: # Iterate over a copy for safe removal
+                        if gene_iter in df_for_parallel.columns:
+                            df_for_parallel[gene_iter] = pd.to_numeric(df_for_parallel[gene_iter], errors='coerce')
+                        else:
+                            st.warning(f"Gene column '{gene_iter}' not found in DataFrame for parallel plot. Removing from dimensions.")
+                            if gene_iter in genes_for_plot_parallel: genes_for_plot_parallel.remove(gene_iter) # Remove from original list for next step
+                    
+                    final_genes_for_plot = [g for g in genes_for_plot_parallel if g in df_for_parallel.columns]
+                    if final_genes_for_plot:
+                         df_for_parallel = df_for_parallel.dropna(subset=final_genes_for_plot)
+                    
+                    if df_for_parallel.empty or len(df_for_parallel) < 2:
+                        st.warning("Insufficient data after cleaning for parallel coordinates.")
+                    else:
+                        numeric_genes = [gene for gene in final_genes_for_plot if gene in df_for_parallel.columns and pd.api.types.is_numeric_dtype(df_for_parallel[gene])]
+                        if len(numeric_genes) < 2:
+                            st.error("Need at least 2 numeric dimensions for parallel coordinates plot.")
+                        else:
+                            fig_parallel = px.parallel_coordinates(
+                                df_for_parallel, color="ClusterNumeric", dimensions=numeric_genes,
+                                title="Parallel Coordinates Plot by Cluster"
+                            )
+                            st.plotly_chart(fig_parallel, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating parallel coordinates plot: {str(e)}")
+            else:
+                st.warning("No data available for parallel coordinates plot.")
+
+    elif additional_viz_choice == "Heatmap of Mean Profiles":
+        st.subheader("Heatmap of Mean Cluster Profiles")
+        if not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use and gene_names_to_use:
+            mean_profiles = combined_data_df_to_use.groupby('Cluster')[gene_names_to_use].mean()
+            if not mean_profiles.empty:
+                fig_heatmap_mean, ax_heatmap_mean = plt.subplots(figsize=(10, max(4, len(mean_profiles) * 0.5)))
+                sns.heatmap(mean_profiles, annot=True, fmt=".2f", cmap="viridis", ax=ax_heatmap_mean, cbar=True)
+                ax_heatmap_mean.set_xlabel("Genes / Features")
+                ax_heatmap_mean.set_ylabel("Cluster ID")
+                ax_heatmap_mean.set_title("Mean Gene Expression Profiles per Cluster")
+                plt.xticks(rotation=45, ha='right')
+                st.pyplot(fig_heatmap_mean)
+            else: st.info("No mean profiles to display.")
+        else: st.info("Clustered data or gene names not available.")
+
+    elif additional_viz_choice == "3D PCA Scatter":
+        st.subheader("3D PCA Projection of Clustered Data")
+        if X_full_to_use.shape[1] >= 3:
+            try:
+                pca_3d = PCA(n_components=3)
+                projected_3d = pca_3d.fit_transform(X_full_to_use)
+                df_3d_pca = pd.DataFrame({
+                    "PC1": projected_3d[:, 0], "PC2": projected_3d[:, 1], "PC3": projected_3d[:, 2],
+                    "Cluster": final_labels_to_use.astype(str),
+                    "HighConfidence": combined_data_df_to_use["HighConfidence"]
+                })
+                df_3d_pca['MarkerOpacity'] = df_3d_pca['HighConfidence'].apply(lambda x: 0.9 if x else 0.3)
+                fig_3d = px.scatter_3d(
+                    df_3d_pca, x='PC1', y='PC2', z='PC3', color='Cluster',
+                    opacity='MarkerOpacity',
+                    title="3D PCA of Clustered Data", labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
+                    hover_data=["Cluster", "HighConfidence"]
+                )
+                fig_3d.update_traces(marker=dict(size=5))
+                fig_3d.update_layout(margin=dict(l=0, r=0, b=0, t=40))
+                st.plotly_chart(fig_3d, use_container_width=True)
+            except Exception as e: st.error(f"Error during 3D PCA: {e}")
+        else: st.warning("Need at least 3 features/genes for 3D PCA.")
+
+    elif additional_viz_choice == "Gene BoxPlots":
+        st.subheader("Gene Expression Distribution by Cluster (Box Plots)")
+        if gene_names_to_use:
+            num_genes_to_boxplot = min(5, len(gene_names_to_use))
+            selected_genes_for_boxplot = st.multiselect(
+                "Select genes for box plot:", options=gene_names_to_use,
+                default=gene_names_to_use[:num_genes_to_boxplot], key="boxplot_genes_select"
+            )
+            if selected_genes_for_boxplot and not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
+                n_cols_bp = 2
+                n_rows_bp = (len(selected_genes_for_boxplot) + n_cols_bp - 1) // n_cols_bp
+                fig_boxplots, axs_bp = plt.subplots(n_rows_bp, n_cols_bp, figsize=(n_cols_bp * 7, n_rows_bp * 5), squeeze=False)
+                axs_bp_flat = axs_bp.flatten()
+                for idx, gene_name_bp in enumerate(selected_genes_for_boxplot): # Renamed inner var
+                    if idx < len(axs_bp_flat):
+                        ax = axs_bp_flat[idx]
+                        sns.boxplot(x='Cluster', y=gene_name_bp, data=combined_data_df_to_use, ax=ax, palette="Set2")
+                        sns.stripplot(x='Cluster', y=gene_name_bp, data=combined_data_df_to_use, ax=ax, color=".25", alpha=0.5, dodge=True)
+                        ax.set_title(f"Expression of {gene_name_bp}")
+                for i_ax_bp in range(len(selected_genes_for_boxplot), len(axs_bp_flat)): fig_boxplots.delaxes(axs_bp_flat[i_ax_bp])
+                plt.tight_layout()
+                st.pyplot(fig_boxplots)
+        else:
+            st.warning("Gene names not available for box plots.")
+
+    elif additional_viz_choice == "PCA Scatter (Streamlit Native)":
+        st.subheader("PCA Projection of Clustered Data (Streamlit Native)")
+        if 'X_full_for_plot' in st.session_state and 'final_labels_for_plot' in st.session_state:
+            X_full_viz = st.session_state.X_full_for_plot
+            final_labels_viz = st.session_state.final_labels_for_plot
+            try:
+                pca_model_st = PCA(n_components=2)
+                projected_data_st = pca_model_st.fit_transform(X_full_viz)
+                df_pca_st = pd.DataFrame({
+                    "PC1": projected_data_st[:, 0],
+                    "PC2": projected_data_st[:, 1],
+                    "Cluster": final_labels_viz.astype(str)
+                })
+                st.scatter_chart(df_pca_st, x="PC1", y="PC2", color="Cluster")
+            except Exception as e:
+                st.error(f"Error generating Streamlit native PCA scatter plot: {e}")
+        else:
+            st.warning("Clustering results needed for Streamlit native PCA scatter plot are not available.")
+
+    st.subheader("Cluster Annotations (via OpenRouter LLM)")
+    if not st.secrets.get("OPENROUTER_API_KEY"):
+        st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
+    else:
+        for i_cluster_annotate in range(n_clusters_input): # Renamed loop var
+            cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i_cluster_annotate]
+            if gene_names_to_use and not cluster_subset_df.empty:
+                cluster_gene_means = cluster_subset_df[gene_names_to_use].mean()
+                top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
+                if st.button(f"Annotate Cluster {i_cluster_annotate} (Top 5 genes: {', '.join(top_genes_list)})", key=f"annotate_btn_{i_cluster_annotate}"):
+                    if top_genes_list:
+                        with st.spinner(f"Annotating Cluster {i_cluster_annotate}..."):
+                            annotation = annotate_cluster_llm(top_genes_list)
+                            st.markdown(f"**Cluster {i_cluster_annotate} Annotation:** {annotation}")
+                            if 'cluster_annotations' not in st.session_state:
+                                st.session_state.cluster_annotations = {}
+                            st.session_state.cluster_annotations[i_cluster_annotate] = annotation
+                    else:
+                        st.write(f"Cluster {i_cluster_annotate} has no gene data to determine top genes for annotation.")
+            elif cluster_subset_df.empty:
+                 st.write(f"Cluster {i_cluster_annotate} is empty, skipping annotation.")
+            else:
+                st.warning("Gene names not available for cluster annotation.")
+elif st.session_state.data_generated:
+    st.info("Click '🚀 Run Simulated Distributed Conformal Clustering' to start the analysis.")
