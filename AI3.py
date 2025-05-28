@@ -14,7 +14,7 @@ import requests
 import altair as alt
 from sklearn import metrics
 import os
-import plotly.express as px # Added for new plots
+import plotly.express as px
 
 # -----------------------
 # Cached Simulation
@@ -119,19 +119,16 @@ num_rounds_input = st.sidebar.slider("Federated Rounds", 1, 5, 1, key="num_round
 conf_level_input = st.sidebar.slider("Conformal Confidence Level (α)", 0.50, 0.99, 0.90, step=0.01, key="conf_level_alpha")
 
 st.sidebar.header("📊 Visualization & Metrics")
-plot_type_input = st.sidebar.radio("PCA Plot Type", ["Connected Scatter", "Pure Scatter (Altair)"], key="plot_type_viz")
 metric_choice_input = st.sidebar.selectbox(
     "Clustering Quality Metric",
     ["Silhouette Score", "Calinski-Harabasz Index", "Davies-Bouldin Index", "Inertia"],
     key="metric_choice_viz"
 )
-# New Sidebar Option for Additional Visualizations
 additional_viz_choice = st.sidebar.selectbox(
     "Additional Cluster Visualization",
-    ["None", "Mean Cluster Curves", "Parallel Coordinates", "Heatmap of Mean Profiles", "3D PCA Scatter", "Gene BoxPlots"],
+    ["None", "Mean Cluster Curves", "Parallel Coordinates", "Heatmap of Mean Profiles", "3D PCA Scatter", "Gene BoxPlots", "PCA Scatter (Streamlit Native)"],
     key="additional_viz"
 )
-
 
 class ClusterClient(fl.client.NumPyClient):
     def __init__(self, client_data: np.ndarray, num_clusters: int):
@@ -277,7 +274,7 @@ if st.session_state.get('analysis_run_complete', False):
     combined_data_df_to_use = st.session_state.combined_data_df_clustered
     final_labels_to_use = st.session_state.final_labels_for_plot
     X_full_to_use = st.session_state.X_full_for_plot
-    gene_names_to_use = st.session_state.gene_names # Retrieve gene names
+    gene_names_to_use = st.session_state.gene_names
 
     st.subheader("Global Clustering Results")
     st.write(f"**Conformal Threshold at {int(conf_level_input*100)}% confidence:** {combined_data_df_to_use['ConformalScore'].quantile(conf_level_input):.3f}")
@@ -305,7 +302,8 @@ if st.session_state.get('analysis_run_complete', False):
     except Exception as e:
         st.error(f"Error calculating metric '{metric_choice_input}': {e}")
 
-    st.subheader("PCA Projection of Clustered Data")
+    # Default PCA Plot (Altair)
+    st.subheader("PCA Projection of Clustered Data (Altair)")
     try:
         pca_model = PCA(n_components=2)
         projected_data = pca_model.fit_transform(X_full_to_use)
@@ -315,23 +313,20 @@ if st.session_state.get('analysis_run_complete', False):
             "Cluster": final_labels_to_use.astype(str),
             "HighConfidence": combined_data_df_to_use["HighConfidence"]
         })
-        if plot_type_input == "Connected Scatter":
-            st.scatter_chart(plot_df_pca, x="PC1", y="PC2", color="Cluster")
-        else:
-            chart = (
-                alt.Chart(plot_df_pca)
-                .mark_circle(size=60)
-                .encode(
-                    x=alt.X("PC1", title="Principal Component 1"),
-                    y=alt.Y("PC2", title="Principal Component 2"),
-                    color=alt.Color("Cluster:N", title="Cluster"),
-                    opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
-                    tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
-                )
-                .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
-                .interactive()
+        chart = (
+            alt.Chart(plot_df_pca)
+            .mark_circle(size=60)
+            .encode(
+                x=alt.X("PC1", title="Principal Component 1"),
+                y=alt.Y("PC2", title="Principal Component 2"),
+                color=alt.Color("Cluster:N", title="Cluster"),
+                opacity=alt.condition(alt.datum.HighConfidence, alt.value(0.9), alt.value(0.3)),
+                tooltip=["PC1", "PC2", "Cluster", "HighConfidence"]
             )
-            st.altair_chart(chart, use_container_width=True)
+            .properties(title="PCA of Clustered Data (High/Low Confidence)", width=700, height=500)
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
     except Exception as e:
         st.error(f"Error during PCA and plotting: {e}")
 
@@ -351,8 +346,8 @@ if st.session_state.get('analysis_run_complete', False):
                     mean_curve = cluster_data.mean(axis=0)
                     ax.plot(gene_names_to_use, mean_curve, color=f'C{cluster_id}', linewidth=2, label=f"Mean Cluster {cluster_id}")
                     if st.checkbox(f"Show individual curves for Cluster {cluster_id}", key=f"show_ind_c{cluster_id}"):
-                        for _, row_val in cluster_data.iterrows(): # Use iterrows() for DataFrame
-                            ax.plot(gene_names_to_use, row_val, color=f'C{cluster_id}', alpha=0.2) # Access row directly
+                        for _, row_val in cluster_data.iterrows():
+                            ax.plot(gene_names_to_use, row_val, color=f'C{cluster_id}', alpha=0.2)
                     ax.set_title(f"Cluster {cluster_id} (N={len(cluster_data)})")
                     ax.set_xlabel("Genes / Features")
                     ax.set_ylabel("Expression Value")
@@ -389,37 +384,27 @@ if st.session_state.get('analysis_run_complete', False):
 
     elif additional_viz_choice == "3D PCA Scatter":
         st.subheader("3D PCA Projection of Clustered Data")
-        if X_full_to_use.shape[1] >= 3: # Need at least 3 features for 3D PCA
+        if X_full_to_use.shape[1] >= 3:
             try:
                 pca_3d = PCA(n_components=3)
                 projected_3d = pca_3d.fit_transform(X_full_to_use)
-    
                 df_3d_pca = pd.DataFrame({
-                    "PC1": projected_3d[:, 0],
-                    "PC2": projected_3d[:, 1],
-                    "PC3": projected_3d[:, 2],
+                    "PC1": projected_3d[:, 0], "PC2": projected_3d[:, 1], "PC3": projected_3d[:, 2],
                     "Cluster": final_labels_to_use.astype(str),
-                    "HighConfidence": combined_data_df_to_use["HighConfidence"] # Assuming combined_data_df_to_use is correctly defined
+                    "HighConfidence": combined_data_df_to_use["HighConfidence"]
                 })
-    
-                # Create a new column for opacity values
                 df_3d_pca['MarkerOpacity'] = df_3d_pca['HighConfidence'].apply(lambda x: 0.9 if x else 0.3)
-    
                 fig_3d = px.scatter_3d(
-                    df_3d_pca, x='PC1', y='PC2', z='PC3',
-                    color='Cluster',
-                    opacity='MarkerOpacity', # Use the new column for opacity
-                    title="3D PCA of Clustered Data (High/Low Confidence)",
-                    labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
-                    hover_data=["Cluster", "HighConfidence"] # Explicitly add to hover
+                    df_3d_pca, x='PC1', y='PC2', z='PC3', color='Cluster',
+                    opacity='MarkerOpacity',
+                    title="3D PCA of Clustered Data", labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
+                    hover_data=["Cluster", "HighConfidence"]
                 )
-                fig_3d.update_traces(marker=dict(size=5)) # Control marker size
-                fig_3d.update_layout(margin=dict(l=0, r=0, b=0, t=40)) # Adjust margins for better fit
+                fig_3d.update_traces(marker=dict(size=5))
+                fig_3d.update_layout(margin=dict(l=0, r=0, b=0, t=40))
                 st.plotly_chart(fig_3d, use_container_width=True)
-            except Exception as e:
-                st.error(f"Error during 3D PCA: {e}")
-        else:
-            st.warning("Need at least 3 features/genes for 3D PCA visualization.")
+            except Exception as e: st.error(f"Error during 3D PCA: {e}")
+        else: st.warning("Need at least 3 features/genes for 3D PCA.")
 
     elif additional_viz_choice == "Gene BoxPlots":
         st.subheader("Gene Expression Distribution by Cluster (Box Plots)")
@@ -443,13 +428,33 @@ if st.session_state.get('analysis_run_complete', False):
             plt.tight_layout()
             st.pyplot(fig_boxplots)
 
+    elif additional_viz_choice == "PCA Scatter (Streamlit Native)":
+        st.subheader("PCA Projection of Clustered Data (Streamlit Native)")
+        if 'X_full_for_plot' in st.session_state and 'final_labels_for_plot' in st.session_state:
+            X_full_viz = st.session_state.X_full_for_plot
+            final_labels_viz = st.session_state.final_labels_for_plot
+            try:
+                pca_model_st = PCA(n_components=2)
+                projected_data_st = pca_model_st.fit_transform(X_full_viz)
+                df_pca_st = pd.DataFrame({
+                    "PC1": projected_data_st[:, 0],
+                    "PC2": projected_data_st[:, 1],
+                    "Cluster": final_labels_viz.astype(str)
+                })
+                st.scatter_chart(df_pca_st, x="PC1", y="PC2", color="Cluster")
+            except Exception as e:
+                st.error(f"Error generating Streamlit native PCA scatter plot: {e}")
+        else:
+            st.warning("Clustering results needed for Streamlit native PCA scatter plot are not available.")
+
+
     st.subheader("Cluster Annotations (via OpenRouter LLM)")
     if not st.secrets.get("OPENROUTER_API_KEY"):
         st.warning("OpenRouter API key not found in secrets. Annotation feature disabled.")
     else:
-        for i in range(n_clusters_input):
+        for i in range(n_clusters_input): # Use the current slider value for n_clusters
             cluster_subset_df = combined_data_df_to_use[combined_data_df_to_use["Cluster"] == i]
-            if gene_names_to_use and not cluster_subset_df.empty: # Check gene_names_to_use
+            if gene_names_to_use and not cluster_subset_df.empty:
                 cluster_gene_means = cluster_subset_df[gene_names_to_use].mean()
                 top_genes_list = cluster_gene_means.sort_values(ascending=False).head(5).index.tolist()
                 if st.button(f"Annotate Cluster {i} (Top 5 genes: {', '.join(top_genes_list)})", key=f"annotate_btn_{i}"):
