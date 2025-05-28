@@ -129,4 +129,3 @@ for i in range(n_clusters):
     if st.button(f"Annotate Cluster {i}"):
         summary = annotate_cluster(top_genes)
         st.markdown(f"**Cluster {i} Annotation:** {summary}")
-```
