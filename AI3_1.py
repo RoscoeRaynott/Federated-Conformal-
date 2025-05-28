@@ -77,7 +77,7 @@ def simulate_federated_data_cached(n_centers_sim, n_samples_sim, n_features_sim,
 # Streamlit UI: Setup
 # -----------------------
 st.set_page_config(page_title="Federated Conformal Clustering vs Centralized Clustering", layout="wide")
-st.title("🧬 Simulated Distributed Conformal Clustering for Biomarker Discovery")
+st.title("🧬 Federated Conformal Clustering vs Centralized Clustering for Biomarker Discovery")
 
 # --- Sidebar for Inputs ---
 st.sidebar.header("⚙️ Simulation & Model Parameters")
