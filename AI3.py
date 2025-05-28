@@ -387,26 +387,39 @@ if st.session_state.get('analysis_run_complete', False):
                 plt.xticks(rotation=45, ha='right')
                 st.pyplot(fig_heatmap_mean)
 
-    elif additional_viz_choice == "3D PCA Scatter":
+        elif additional_viz_choice == "3D PCA Scatter":
         st.subheader("3D PCA Projection of Clustered Data")
-        if X_full_to_use.shape[1] >= 3:
+        if X_full_to_use.shape[1] >= 3: # Need at least 3 features for 3D PCA
             try:
                 pca_3d = PCA(n_components=3)
                 projected_3d = pca_3d.fit_transform(X_full_to_use)
+
                 df_3d_pca = pd.DataFrame({
-                    "PC1": projected_3d[:, 0], "PC2": projected_3d[:, 1], "PC3": projected_3d[:, 2],
+                    "PC1": projected_3d[:, 0],
+                    "PC2": projected_3d[:, 1],
+                    "PC3": projected_3d[:, 2],
                     "Cluster": final_labels_to_use.astype(str),
-                    "HighConfidence": combined_data_df_to_use["HighConfidence"]
+                    "HighConfidence": combined_data_df_to_use["HighConfidence"] # Assuming combined_data_df_to_use is correctly defined
                 })
+
+                # Create a new column for opacity values
+                df_3d_pca['MarkerOpacity'] = df_3d_pca['HighConfidence'].apply(lambda x: 0.9 if x else 0.3)
+
                 fig_3d = px.scatter_3d(
-                    df_3d_pca, x='PC1', y='PC2', z='PC3', color='Cluster',
-                    opacity=df_3d_pca['HighConfidence'].apply(lambda x: 0.9 if x else 0.3).tolist(),
-                    title="3D PCA of Clustered Data", labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'}
+                    df_3d_pca, x='PC1', y='PC2', z='PC3',
+                    color='Cluster',
+                    opacity='MarkerOpacity', # Use the new column for opacity
+                    title="3D PCA of Clustered Data (High/Low Confidence)",
+                    labels={'PC1': 'PC1', 'PC2': 'PC2', 'PC3': 'PC3'},
+                    hover_data=["Cluster", "HighConfidence"] # Explicitly add to hover
                 )
-                fig_3d.update_traces(marker=dict(size=5))
+                fig_3d.update_traces(marker=dict(size=5)) # Control marker size
+                fig_3d.update_layout(margin=dict(l=0, r=0, b=0, t=40)) # Adjust margins for better fit
                 st.plotly_chart(fig_3d, use_container_width=True)
-            except Exception as e: st.error(f"Error during 3D PCA: {e}")
-        else: st.warning("Need at least 3 features/genes for 3D PCA.")
+            except Exception as e:
+                st.error(f"Error during 3D PCA: {e}")
+        else:
+            st.warning("Need at least 3 features/genes for 3D PCA visualization.")
 
     elif additional_viz_choice == "Gene BoxPlots":
         st.subheader("Gene Expression Distribution by Cluster (Box Plots)")
