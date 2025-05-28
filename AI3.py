@@ -1,4 +1,3 @@
-```python
 # Streamlit + Flower + OpenRouter: Federated Conformal Clustering with Real Gene Names
 import streamlit as st
 import pandas as pd
