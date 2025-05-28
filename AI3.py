@@ -196,60 +196,88 @@ if st.button("🚀 Run Federated Conformal Clustering", key="run_analysis_btn"):
         st.error("Please generate data first using the sidebar button.")
         st.stop()
 
-    st.warning(
-        "Flower's `fl.server.start_server()` is deprecated and may cause issues (like `ValueError: signal only works in main thread`) "
-        "when run in a thread within Streamlit. For stable use, run the Flower server (SuperLink) "
-        "as a separate command-line process: `$ flower-superlink --insecure`"
-    )
-
+    # Clear previous strategy results
     st.session_state.fl_strategy = SaveCentroidsStrategy(
         min_fit_clients=n_centers_input,
         min_available_clients=n_centers_input,
     )
 
-    server_thread = threading.Thread(
-        target=lambda: fl.server.start_server(
-            server_address="0.0.0.0:8080",
-            config=fl.server.ServerConfig(num_rounds=num_rounds_input),
-            strategy=st.session_state.fl_strategy
-        ),
-        daemon=True
-    )
-    server_thread.start()
-    st.info("Flower server starting in a background thread...")
-    time.sleep(2)
+    try:
+        # Use a different port to avoid conflicts
+        import socket
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                s.listen(1)
+                port = s.getsockname()[1]
+            return port
+        
+        server_port = find_free_port()
+        server_address = f"0.0.0.0:{server_port}"
+        
+        st.info(f"Starting Flower server on port {server_port}...")
+        
+        # Start server in thread with proper error handling
+        server_thread = threading.Thread(
+            target=lambda: fl.server.start_server(
+                server_address=server_address,
+                config=fl.server.ServerConfig(num_rounds=num_rounds_input),
+                strategy=st.session_state.fl_strategy
+            ),
+            daemon=True
+        )
+        server_thread.start()
+        
+        # Give server more time to start
+        time.sleep(5)
+        
+        # Start clients with better error handling
+        client_threads = []
+        for center_idx, center_df_loop in enumerate(st.session_state.data_centers):
+            if st.session_state.gene_names:
+                client_data_np = center_df_loop[st.session_state.gene_names].values
+                
+                def start_client(data, k_clusters, server_addr, center_id):
+                    try:
+                        fl.client.start_numpy_client(server_addr, ClusterClient(data, k_clusters))
+                    except Exception as e:
+                        st.error(f"Client {center_id} failed: {e}")
+                
+                ct = threading.Thread(
+                    target=start_client,
+                    args=(client_data_np, n_clusters_input, server_address, center_idx+1),
+                    daemon=True
+                )
+                client_threads.append(ct)
+                ct.start()
+                st.info(f"Flower client for Center_{center_idx+1} starting...")
+                time.sleep(1)  # Stagger client starts
+            else:
+                st.error("Gene names are missing. Cannot start clients.")
+                st.stop()
 
-    client_threads = []
-    for center_idx, center_df_loop in enumerate(st.session_state.data_centers):
-        if st.session_state.gene_names:
-            client_data_np = center_df_loop[st.session_state.gene_names].values
-            ct = threading.Thread(
-                target=fl.client.start_numpy_client,
-                args=("0.0.0.0:8080", ClusterClient(client_data_np, n_clusters_input)),
-                daemon=True
-            )
-            client_threads.append(ct)
-            ct.start()
-            st.info(f"Flower client for Center_{center_idx+1} starting...")
+        # Wait for federated learning to complete
+        total_wait_time = 5 * num_rounds_input + n_centers_input * 2 + 5
+        with st.spinner(f"Running {num_rounds_input} federated rounds... (waiting approx {total_wait_time}s)"):
+            time.sleep(total_wait_time)
+        
+        # Check if we got results
+        if st.session_state.fl_strategy.aggregated_centroids_list:
+            st.success("Federated learning completed successfully!")
+            global_centroids = st.session_state.fl_strategy.aggregated_centroids_list[-1]
         else:
-            st.error("Gene names are missing. Cannot start clients.")
-            st.stop()
-
-    total_wait_time = 3 * num_rounds_input + n_centers_input + 2
-    with st.spinner(f"Running {num_rounds_input} federated rounds... (waiting approx {total_wait_time}s)"):
-        time.sleep(total_wait_time)
-    st.success("Federated learning simulation finished.")
-
-    global_centroids = None
-    if st.session_state.fl_strategy.aggregated_centroids_list:
-        global_centroids = st.session_state.fl_strategy.aggregated_centroids_list[-1]
-    else:
-        st.warning("Could not retrieve federated centroids. Performing centralized K-Means as a fallback.")
+            raise Exception("No federated centroids were generated")
+            
+    except Exception as federated_error:
+        st.warning(f"Federated learning failed: {federated_error}. Using centralized K-Means as fallback.")
+        
+        # Fallback to centralized clustering
         combined_data_df_fallback = pd.concat(st.session_state.data_centers, ignore_index=True)
         X_fallback = combined_data_df_fallback[st.session_state.gene_names].values
         kmeans_fallback_model = KMeans(n_clusters=n_clusters_input, random_state=42, n_init='auto').fit(X_fallback)
         global_centroids = kmeans_fallback_model.cluster_centers_
         st.session_state.kmeans_model_for_metrics = kmeans_fallback_model
+        st.info("Centralized clustering completed successfully.")
 
     if global_centroids is not None:
         combined_data_df = pd.concat(st.session_state.data_centers, ignore_index=True)
