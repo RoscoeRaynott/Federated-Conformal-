@@ -360,14 +360,53 @@ if st.session_state.get('analysis_run_complete', False):
         st.subheader("Parallel Coordinates Plot of Clusters")
         num_genes_for_parallel = min(10, len(gene_names_to_use))
         genes_for_plot_parallel = gene_names_to_use[:num_genes_for_parallel]
+        
         if not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
-            df_for_parallel = combined_data_df_to_use.copy()
-            df_for_parallel['Cluster'] = df_for_parallel['Cluster'].astype(str)
-            fig_parallel = px.parallel_coordinates(
-                df_for_parallel, color="Cluster", dimensions=genes_for_plot_parallel,
-                title="Parallel Coordinates Plot by Cluster"
-            )
-            st.plotly_chart(fig_parallel, use_container_width=True)
+            try:
+                df_for_parallel = combined_data_df_to_use.copy()
+                df_for_parallel['Cluster'] = df_for_parallel['Cluster'].astype(str)
+                
+                # Ensure all gene columns are numeric and handle missing values
+                for gene in genes_for_plot_parallel:
+                    df_for_parallel[gene] = pd.to_numeric(df_for_parallel[gene], errors='coerce')
+                
+                # Drop rows with any NaN values in the selected genes
+                df_for_parallel = df_for_parallel.dropna(subset=genes_for_plot_parallel)
+                
+                # Check if we still have data after cleaning
+                if df_for_parallel.empty:
+                    st.error("No valid data remaining after cleaning for parallel coordinates plot.")
+                elif len(df_for_parallel) < 2:
+                    st.warning("Insufficient data points for parallel coordinates plot after cleaning.")
+                else:
+                    # Verify all dimensions are numeric
+                    numeric_genes = []
+                    for gene in genes_for_plot_parallel:
+                        if pd.api.types.is_numeric_dtype(df_for_parallel[gene]):
+                            numeric_genes.append(gene)
+                        else:
+                            st.warning(f"Gene {gene} is not numeric, excluding from plot.")
+                    
+                    if len(numeric_genes) < 2:
+                        st.error("Need at least 2 numeric dimensions for parallel coordinates plot.")
+                    else:
+                        fig_parallel = px.parallel_coordinates(
+                            df_for_parallel, 
+                            color="Cluster", 
+                            dimensions=numeric_genes,
+                            title="Parallel Coordinates Plot by Cluster"
+                        )
+                        st.plotly_chart(fig_parallel, use_container_width=True)
+                        
+            except Exception as e:
+                st.error(f"Error creating parallel coordinates plot: {str(e)}")
+                st.write("Debug info:")
+                st.write(f"DataFrame shape: {df_for_parallel.shape}")
+                st.write(f"Cluster column type: {df_for_parallel['Cluster'].dtype}")
+                st.write(f"Gene columns dtypes: {df_for_parallel[genes_for_plot_parallel].dtypes.to_dict()}")
+                st.write(f"Any NaN values: {df_for_parallel[genes_for_plot_parallel].isna().any().any()}")
+        else:
+            st.warning("No data available for parallel coordinates plot.")
 
     elif additional_viz_choice == "Heatmap of Mean Profiles":
         st.subheader("Heatmap of Mean Cluster Profiles")
