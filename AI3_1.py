@@ -411,7 +411,7 @@ if st.session_state.get('analysis_run_complete', False):
                 try:
                     df_for_parallel = combined_data_df_to_use.copy()
                     unique_cluster_labels_str = sorted(df_for_parallel['Cluster'].astype(str).unique())
-                    label_to_numeric_map = {label: i for i, label_str_val in enumerate(unique_cluster_labels_str)} # Renamed inner var
+                    label_to_numeric_map = {label_str_val: i for i, label_str_val in enumerate(unique_cluster_labels_str)} # Renamed inner var
                     df_for_parallel['ClusterNumeric'] = df_for_parallel['Cluster'].astype(str).map(label_to_numeric_map)
                     
                     temp_genes_for_plot_parallel = list(genes_for_plot_parallel)
