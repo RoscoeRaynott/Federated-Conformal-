@@ -358,53 +358,75 @@ if st.session_state.get('analysis_run_complete', False):
 
     elif additional_viz_choice == "Parallel Coordinates":
         st.subheader("Parallel Coordinates Plot of Clusters")
+        if not gene_names_to_use:
+            st.warning("No gene names available for parallel coordinates plot.")
+            return
+
         num_genes_for_parallel = min(10, len(gene_names_to_use))
         genes_for_plot_parallel = gene_names_to_use[:num_genes_for_parallel]
-        
+
+        if not genes_for_plot_parallel:
+            st.warning("No genes selected or available for parallel coordinates plot.")
+            return
+
         if not combined_data_df_to_use.empty and 'Cluster' in combined_data_df_to_use:
             try:
                 df_for_parallel = combined_data_df_to_use.copy()
-                df_for_parallel['Cluster'] = df_for_parallel['Cluster'].astype(str)
-                
-                # Ensure all gene columns are numeric and handle missing values
+                # df_for_parallel['Cluster'] = df_for_parallel['Cluster'].astype(str) # Keep as string for a moment for unique labels
+
+                # --- Convert cluster labels to numeric for coloring in parcoords ---
+                unique_cluster_labels_str = sorted(df_for_parallel['Cluster'].astype(str).unique())
+                label_to_numeric_map = {label: i for i, label in enumerate(unique_cluster_labels_str)}
+                df_for_parallel['ClusterNumeric'] = df_for_parallel['Cluster'].astype(str).map(label_to_numeric_map)
+                # --- End of conversion ---
+
                 for gene in genes_for_plot_parallel:
                     df_for_parallel[gene] = pd.to_numeric(df_for_parallel[gene], errors='coerce')
-                
-                # Drop rows with any NaN values in the selected genes
+
                 df_for_parallel = df_for_parallel.dropna(subset=genes_for_plot_parallel)
-                
-                # Check if we still have data after cleaning
+
                 if df_for_parallel.empty:
                     st.error("No valid data remaining after cleaning for parallel coordinates plot.")
                 elif len(df_for_parallel) < 2:
                     st.warning("Insufficient data points for parallel coordinates plot after cleaning.")
                 else:
-                    # Verify all dimensions are numeric
                     numeric_genes = []
                     for gene in genes_for_plot_parallel:
                         if pd.api.types.is_numeric_dtype(df_for_parallel[gene]):
                             numeric_genes.append(gene)
                         else:
                             st.warning(f"Gene {gene} is not numeric, excluding from plot.")
-                    
+
                     if len(numeric_genes) < 2:
                         st.error("Need at least 2 numeric dimensions for parallel coordinates plot.")
                     else:
                         fig_parallel = px.parallel_coordinates(
-                            df_for_parallel, 
-                            color="Cluster", 
+                            df_for_parallel,
+                            color="ClusterNumeric",  # Use the new numeric cluster column
                             dimensions=numeric_genes,
-                            title="Parallel Coordinates Plot by Cluster"
+                            title="Parallel Coordinates Plot by Cluster",
+                            # Optional: If you want specific discrete colors for your numeric cluster IDs
+                            # color_discrete_map={i: px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)]
+                            #                     for i, label in enumerate(unique_cluster_labels_str)}
+                            # OR let Plotly use its default continuous scale for numbers,
+                            # you might need to adjust 'color_continuous_scale' if the default isn't what you want.
+                            # For distinct colors for distinct numbers, often px will choose a good default.
+                            # If numbers are 0, 1, 2,... a discrete map usually works best with 'color_discrete_map'.
                         )
+                        # To make the legend show original string labels if you use ClusterNumeric for color:
+                        # This is a bit more involved with parcoords. You might need to customize the colorscale's ticktext.
+                        # For simplicity, the legend will show 0, 1, 2... for ClusterNumeric.
+                        # You could add a text annotation to explain the mapping.
+
                         st.plotly_chart(fig_parallel, use_container_width=True)
-                        
+
             except Exception as e:
                 st.error(f"Error creating parallel coordinates plot: {str(e)}")
-                st.write("Debug info:")
-                st.write(f"DataFrame shape: {df_for_parallel.shape}")
-                st.write(f"Cluster column type: {df_for_parallel['Cluster'].dtype}")
-                st.write(f"Gene columns dtypes: {df_for_parallel[genes_for_plot_parallel].dtypes.to_dict()}")
-                st.write(f"Any NaN values: {df_for_parallel[genes_for_plot_parallel].isna().any().any()}")
+                # st.write("Debug info:") # Removed verbose debug for this specific fix
+                # st.write(f"DataFrame shape: {df_for_parallel.shape if 'df_for_parallel' in locals() else 'N/A'}")
+                # st.write(f"Cluster column type: {df_for_parallel['ClusterNumeric'].dtype if 'ClusterNumeric' in df_for_parallel.columns else 'N/A'}")
+                # st.write(f"Gene columns dtypes: {df_for_parallel[genes_for_plot_parallel].dtypes.to_dict() if 'df_for_parallel' in locals() else 'N/A'}")
+                # st.write(f"Any NaN values: {df_for_parallel[genes_for_plot_parallel].isna().any().any() if 'df_for_parallel' in locals() else 'N/A'}")
         else:
             st.warning("No data available for parallel coordinates plot.")
 
