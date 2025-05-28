@@ -17,18 +17,17 @@ from sklearn import metrics
 # -----------------------
 @st.cache_data
 def simulate_federated_data(n_centers, n_samples, n_features):
-    # Fix seed for reproducibility
     np.random.seed(42)
-    genes = ["TP53", "EGFR", "VEGFA", "IL6", "TNF", "BRCA1", "APOE", "ESR1", "CRP", "IFNG",
-             "CDKN2A", "MTHFR", "AKT1", "BRAF", "CTNNB1", "FTO", "INS", "JAK2", "KIT", "MAPK1",
-             "MTOR", "NOS3", "PIK3CA", "PTEN", "RAF1", "TGFB1", "TGFBR2", "TSC1", "TSC2", "PDGFRA",
-             "NFKB1", "SMAD4", "CCND1", "FGFR1", "ABL1", "EGF", "CXCL8", "IL10", "RELA", "STAT3",
-             "CXCL10", "CDK4", "CDK6", "CASP3", "CASP8", "CD19", "CD8A", "FOXP3", "GATA3", "MYC"]
+    genes = ["TP53","EGFR","VEGFA","IL6","TNF","BRCA1","APOE","ESR1","CRP","IFNG",
+             "CDKN2A","MTHFR","AKT1","BRAF","CTNNB1","FTO","INS","JAK2","KIT","MAPK1",
+             "MTOR","NOS3","PIK3CA","PTEN","RAF1","TGFB1","TGFBR2","TSC1","TSC2","PDGFRA",
+             "NFKB1","SMAD4","CCND1","FGFR1","ABL1","EGF","CXCL8","IL10","RELA","STAT3",
+             "CXCL10","CDK4","CDK6","CASP3","CASP8","CD19","CD8A","FOXP3","GATA3","MYC"]
     genes = genes[:n_features]
     data_centers = []
     for i in range(n_centers):
-        mean_shift = np.random.normal(0, 1.5, n_features)
-        X = np.random.normal(loc=mean_shift, scale=1.0, size=(n_samples, n_features))
+        mean_shift = np.random.normal(0,1.5,n_features)
+        X = np.random.normal(loc=mean_shift, scale=1.0, size=(n_samples,n_features))
         df = pd.DataFrame(X, columns=genes)
         df["Center"] = f"Center_{i+1}"
         df["SampleID"] = [f"S{i+1}_{j+1}" for j in range(n_samples)]
@@ -39,17 +38,15 @@ def simulate_federated_data(n_centers, n_samples, n_features):
 # Streamlit UI: Input Preview
 # -----------------------
 st.title("Federated Conformal Clustering for Biomarker Discovery")
-# Input parameters
-n_centers = st.sidebar.slider("Number of Centers (N)", 2, 5, 3)
-n_samples = st.sidebar.slider("Samples per Center (M)", 10, 200, 100)
-n_features = st.sidebar.slider("Number of Genes (G)", 5, 50, 20)
+# Input parameters with explicit keys to avoid duplicates
+n_centers = st.sidebar.slider("Number of Centers (N)", 2, 5, 3, key="n_centers")
+n_samples = st.sidebar.slider("Samples per Center (M)", 10, 200, 100, key="n_samples")
+n_features = st.sidebar.slider("Number of Genes (G)", 5, 50, 20, key="n_features")
 # Preview button
-if st.sidebar.button("Generate & Preview Data"):
+if st.sidebar.button("Generate & Preview Data", key="preview_btn"):
     data_centers, genes = simulate_federated_data(n_centers, n_samples, n_features)
-    # Show first center preview
     st.subheader("Preview: Data from Center_1")
     st.dataframe(data_centers[0].head())
-    # Heatmap for first 10 samples
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
     ax.imshow(data_centers[0].iloc[:10, :n_features], aspect='auto')
@@ -58,18 +55,19 @@ if st.sidebar.button("Generate & Preview Data"):
     st.pyplot(fig)
     st.stop()
 
-# After preview, data is fixed
+# After preview, fix data
 data_centers, genes = simulate_federated_data(n_centers, n_samples, n_features)
 
-# Existing sidebar options
-n_clusters = st.sidebar.slider("Number of Clusters", 2, 5, 3)
-plot_type = st.sidebar.radio("Plot Type", ["Connected Scatter", "Pure Scatter"])
-metric_choice = st.sidebar.selectbox("Quality Metric", [
-    "Inertia", "Silhouette Score", "Calinski-Harabasz Index", "Davies-Bouldin Index"
-])
-num_rounds = st.sidebar.slider("Federated Rounds", 1, 10, 1)
-conf_level = st.sidebar.slider("Conformal Confidence", 0.50, 0.99, 0.90, step=0.01)
-
+# Sidebar controls with unique keys
+n_clusters = st.sidebar.slider("Number of Clusters", 2, 5, 3, key="n_clusters")
+plot_type = st.sidebar.radio("Plot Type", ["Connected Scatter","Pure Scatter"], key="plot_type")
+metric_choice = st.sidebar.selectbox(
+    "Quality Metric",
+    ["Inertia","Silhouette Score","Calinski-Harabasz Index","Davies-Bouldin Index"],
+    key="metric_choice"
+)
+num_rounds = st.sidebar.slider("Federated Rounds", 1, 10, 1, key="num_rounds")
+conf_level = st.sidebar.slider("Conformal Confidence", 0.50, 0.99, 0.90, step=0.01, key="conf_level")
 
 # -----------------------
 # Flower Client Definition
